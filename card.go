@@ -241,20 +241,35 @@ func (p *previewServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	h.Set("Content-Type", "application/octet-stream")
-	if it.path != "" {
-		http.ServeFile(w, r, it.path)
-		return
-	}
-	// ponytail: the cache is never pruned; add an age limit if it grows large.
-	cache := filepath.Join(p.app.dir, "preview-cache", sha256Hex([]byte(strings.SplitN(it.url, "?", 2)[0])))
-	if _, err := os.Stat(cache); err != nil {
-		if err := p.fetch(r.Context(), it.url, cache); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+	path := it.path
+	if path == "" {
+		// ponytail: the cache is never pruned; add an age limit if it grows large.
+		path = filepath.Join(p.app.dir, "preview-cache", sha256Hex([]byte(strings.SplitN(it.url, "?", 2)[0])))
+		if _, err := os.Stat(path); err != nil {
+			if err := p.fetch(r.Context(), it.url, path); err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
 		}
 	}
-	http.ServeFile(w, r, cache)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if sniff(b) == "glb" {
+		// The widget may not run WebAssembly, which three.js needs for meshopt.
+		if b, err = decodeMeshoptGLB(b); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		h.Set("Content-Type", "model/gltf-binary")
+	} else {
+		h.Set("Content-Type", "application/octet-stream")
+		h.Set("X-Model-Format", sniff(b))
+	}
+	h.Set("Access-Control-Expose-Headers", "X-Model-Format")
+	w.Write(b)
 }
 
 func (p *previewServer) fetch(ctx context.Context, url, path string) error {
