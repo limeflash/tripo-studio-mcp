@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -365,11 +366,38 @@ func blenderExe() (string, error) {
 		}
 		return p, nil
 	}
-	p, err := exec.LookPath("blender")
-	if err != nil {
-		return "", errors.New("Blender not found: set TRIPO_BLENDER_EXECUTABLE to blender.exe, or put blender on PATH")
+	if p, err := exec.LookPath("blender"); err == nil {
+		return p, nil
 	}
-	return p, nil
+	if p := findBlender(); p != "" {
+		return p, nil
+	}
+	return "", errors.New("Blender not found: set TRIPO_BLENDER_EXECUTABLE to blender.exe, or put blender on PATH")
+}
+
+// findBlender looks where Blender usually lands on Windows: the official
+// installer's folder, and a portable copy at <drive>:\Blender. The newest
+// version wins.
+func findBlender() string {
+	var found []string
+	for d := 'C'; d <= 'Z'; d++ {
+		root := string(d) + `:\`
+		if _, err := os.Stat(root); err != nil {
+			continue
+		}
+		for _, pattern := range []string{
+			root + `Blender\blender.exe`,
+			root + `Program Files\Blender Foundation\Blender*\blender.exe`,
+		} {
+			m, _ := filepath.Glob(pattern)
+			found = append(found, m...)
+		}
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	sort.Strings(found) // "Blender 4.5" < "Blender 5.0"
+	return found[len(found)-1]
 }
 
 // runBlender runs the embedded worker on job in the background (no UI) and
@@ -462,7 +490,10 @@ func blenderRun(ctx context.Context, model, outputDir string, label string, job 
 	}
 	r, err := finish(res, work, dir, name)
 	if err == nil {
-		os.RemoveAll(work)
+		// Windows can hold the folder for a moment after Blender exits.
+		for i := 0; i < 10 && os.RemoveAll(work) != nil; i++ {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 	return r, err
 }
