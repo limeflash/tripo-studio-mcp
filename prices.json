@@ -1,0 +1,23 @@
+{
+  "updated": "2026-10-25",
+  "note": "Studio credits per Studio price key. Smart Mesh, texture, retopology and segmentation were checked on studio.tripo3d.ai on 2026-10-25; the rest come from Studio's price config as read by tripo-studio-plugin on 2026-10-08. To change a price without rebuilding, put {\"updated\": \"...\", \"credits\": {\"Key\": n}} in %LOCALAPPDATA%\\TripoStudioMCP\\prices.json.",
+  "credits": {
+    "GenerateBaseNexus": 35,
+    "GenerateBaseNexusV2": 100,
+    "GenerateBase": 15,
+    "GenerateWithTexture": 25,
+    "GenerateQuad": 5,
+    "GenerateSmartPoly": 20,
+    "GenerateGeometryQualityDetailed": 15,
+    "GenerateTextureQualityDetailed": 10,
+    "GenerateTextureQualityExtreme": 20,
+    "PBR": 5,
+    "TextureGeneration": 10,
+    "TextureQualityDetailed": 10,
+    "TextureQualityExtreme": 20,
+    "Retopology_Triangle": 5,
+    "Retopology_Quad": 10,
+    "Retopology_SmartPoly": 30,
+    "Segmentation": 40
+  }
+}
