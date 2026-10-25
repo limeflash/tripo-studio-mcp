@@ -4,7 +4,13 @@ Copyright (c) 2026 limeflash
 
 Portions are derived from tripo-studio-plugin
 (https://github.com/GrinZero/tripo-studio-plugin),
-Copyright (c) 2026 tripo-studio-plugin contributors, under the MIT License.
+Copyright (c) 2026 tripo-studio-plugin contributors, under the MIT License,
+including blender/worker.py.
+
+meshopt.go is ported from meshoptimizer's reference decoder
+(https://github.com/zeux/meshoptimizer), Copyright (c) 2016-2026 Arseny
+Kapoulkine, under the MIT License. ui/dist/card.html bundles three.js and the
+MCP Apps SDK, both under the MIT License; their notices are kept in the bundle.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

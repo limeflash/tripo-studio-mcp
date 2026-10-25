@@ -13,7 +13,7 @@ const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const dl = join(tmpdir(), "tripo-card-host");
 mkdirSync(dl, { recursive: true });
 
-const srv = spawn(here("../../tripo-studio-mcp.exe"), [], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, TRIPO_MCP_DEBUG: "1" } });
+const srv = spawn(here("../../tripo-studio-mcp.exe"), [], { stdio: ["pipe", "pipe", "inherit"] });
 let buf = "";
 let next = 1;
 const waiting = new Map();

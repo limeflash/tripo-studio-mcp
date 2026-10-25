@@ -202,9 +202,15 @@ func shrinkImage(data []byte, edge int) ([]byte, string) {
 // 127.0.0.1 (Chrome's local network access rules).
 func (a *app) previewModel(ctx context.Context, path, url, name string) map[string]any {
 	b, err := a.modelBytes(ctx, path, url)
+	texture := 0 // the real texture size; the preview's is capped
 	if err == nil {
 		switch sniff(b) {
 		case "glb":
+			if sizes, e := glbTextureSizes(b); e == nil {
+				for _, s := range sizes {
+					texture = max(texture, s.Width, s.Height)
+				}
+			}
 			b, err = rewriteGLB(b, 1024)
 		case "fbx":
 		default:
@@ -217,7 +223,7 @@ func (a *app) previewModel(ctx context.Context, path, url, name string) map[stri
 	if err != nil {
 		return map[string]any{"error": err.Error(), "name": name}
 	}
-	return map[string]any{"data": base64.StdEncoding.EncodeToString(b), "format": sniff(b), "name": name}
+	return map[string]any{"data": base64.StdEncoding.EncodeToString(b), "format": sniff(b), "name": name, "texture": texture}
 }
 
 // modelBytes reads a local model, or downloads a signed one into a cache

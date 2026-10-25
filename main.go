@@ -17,13 +17,16 @@ import (
 
 const (
 	serverName    = "tripo-studio-mcp"
-	serverVersion = "0.2.0"
+	serverVersion = "0.3.0"
 )
 
 const instructions = `Tripo Studio through the owner's web session. It spends Studio (Max subscription) credits, not the Tripo API wallet.
-Paid tools submit as soon as they are called: get the owner's OK with the cost first. dry_run=true returns the cost without uploading or spending anything.
+Paid tools (their descriptions start with PAID) submit as soon as they are called: get the owner's OK with the cost first. dry_run=true returns the cost without uploading or spending anything. When the price table does not know a cost it says "unknown": ask the owner before submitting.
 If a paid call reports "outcome unknown", look at tripo_list_projects before submitting again.
-Usual chain: tripo_generate_model (Smart Mesh P1, multiview) -> tripo_texture on the returned project_id -> tripo_download. A paid tool with download_to waits for the job and saves the model in the same call.
+Model: tripo_generate_model (Smart Mesh P1, multiview) -> tripo_texture on the returned project_id -> tripo_download. A paid tool with download_to waits for the job and saves the model in the same call.
+Parts: tripo_segment -> tripo_list_parts -> tripo_complete_parts -> tripo_texture / tripo_remesh with part_names.
+Images: tripo_generate_image -> tripo_generate_multiview -> tripo_generate_model mode=studio_multiview.
+Free and local: tripo_inspect_local_parts, tripo_render_model, tripo_edit_parts, tripo_bake_texture_projection (Blender), tripo_paint_texture, tripo_crop_image.
 Results also render as a card in the chat; keep your own reply short and do not repeat what the card shows.`
 
 // The result widget (MCP Apps). ui/build.mjs writes it; go generate rebuilds it.

@@ -11,7 +11,7 @@ const out = await build({
   minify: true,
   write: false,
   target: "es2022",
-  legalComments: "none",
+  legalComments: "eof",
   define: { __VERSION__: JSON.stringify(version) },
 });
 const js = out.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");

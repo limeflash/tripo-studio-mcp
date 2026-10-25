@@ -146,6 +146,7 @@ function mountViewer(el, model, center) {
     el.classList.add("ready");
     controls(el, v);
   };
+  if (model.texture) el.dataset.texture = model.texture;
   const key = `${model.name}:${model.data?.length}`;
   if (viewer && viewerURL === key) {
     // Re-render: move the live canvas into the new stage.
@@ -172,6 +173,7 @@ function mountViewer(el, model, center) {
 
 function controls(el, v) {
   const s = v.stats();
+  if (el.dataset.texture) s.tex = Number(el.dataset.texture); // the preview's textures are shrunk
   const modes = [["textured", "Textured"], ["clay", "Clay"], ["parts", "Parts"]];
   const seg = h("div", { class: "seg glass", role: "group", "aria-label": "Shading" });
   for (const [m, label] of modes) {
