@@ -34,7 +34,7 @@ It is a full rewrite of the unofficial [tripo-studio-plugin](https://github.com/
 
 | | tripo-studio-plugin 0.3.12 | **tripo-studio-mcp** |
 |---|---|---|
-| Runtime | Node 20+, about 24 MB of bundles and a 15 MB WASM | **one 12 MB binary** |
+| Runtime | Node 20+, about 24 MB of bundles and a 15 MB WASM | **one 10 MB binary** |
 | Paid job | staged → 60-second review card → auto-submit | **one call: submits, reports cost and credits left** |
 | Result cards in Claude Code | fail with `IPC not available (-32603)`; 3D preview unavailable | **work: everything arrives in the tool result** |
 | 3D preview | needs WebAssembly in the widget, or a tool call back to the server | **meshopt decoded in Go; no WASM, no network** |
