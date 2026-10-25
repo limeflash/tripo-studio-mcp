@@ -14,6 +14,7 @@ const ICON = {
   wire: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 21 8v8l-9 5-9-5V8Z"/><path d="M3 8l18 8M21 8 3 16M12 3v18"/></svg>',
   spin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>',
   alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
 };
 
@@ -366,9 +367,32 @@ function imagesView(d, meta) {
   ];
 }
 
+// lightbox shows an image fitted to the card; a click on the image toggles
+// 1:1 with scrolling, a click outside it, × or Esc closes. Where the host
+// offers it, the card goes fullscreen while the image is open.
 function lightbox(src) {
-  const box = h("div", { class: "lightbox", onclick: () => box.remove() }, h("img", { src, alt: "" }));
+  const ctx = app.getHostContext();
+  const full = ctx?.displayMode !== "fullscreen" && ctx?.availableDisplayModes?.includes("fullscreen");
+  const img = h("img", { src, alt: "" });
+  const box = h("div", { class: "lightbox", role: "dialog", "aria-label": "Image", tabindex: "-1" },
+    h("button", { class: "lb-close glass", "aria-label": "Close", title: "Close (Esc)", html: ICON.close, onclick: () => close() }),
+    img);
+  const onKey = (e) => e.key === "Escape" && close();
+  const close = () => {
+    box.remove();
+    root.style.minHeight = "";
+    document.removeEventListener("keydown", onKey);
+    if (full) app.requestDisplayMode({ mode: "inline" }).catch(() => {});
+  };
+  // A short card would show the image tiny: grow it while the image is open
+  // (autoResize reports the new height to the host).
+  root.style.minHeight = "720px";
+  box.addEventListener("click", (e) => e.target === box && close());
+  img.addEventListener("click", () => box.classList.toggle("zoomed"));
+  document.addEventListener("keydown", onKey);
   document.body.append(box);
+  box.focus();
+  if (full) app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
 }
 
 function pendingView() {

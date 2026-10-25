@@ -248,8 +248,16 @@ button.chip.hidden { opacity: 0.38; text-decoration: line-through; }
 .shot { padding: 0; border: 1px solid var(--line); border-radius: var(--r3); overflow: hidden; cursor: zoom-in; background: radial-gradient(80% 70% at 50% 38%, #26262d, #141417); position: relative; }
 .shot img { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; }
 .shot span { position: absolute; left: 8px; bottom: 8px; }
-.lightbox { position: fixed; inset: 0; background: rgba(5, 5, 7, 0.9); display: grid; place-items: center; z-index: 10; cursor: zoom-out; padding: 16px; }
-.lightbox img { max-width: 100%; max-height: 100%; border-radius: var(--r2); box-shadow: var(--shadow); }
+/* Fit by default; .zoomed shows 1:1 and the box scrolls. margin:auto (not
+   align-items:center) keeps an overflowing image scrollable to every edge. */
+.lightbox { position: fixed; inset: 0; z-index: 10; display: flex; overflow: auto; padding: 16px; background: rgba(5, 5, 7, 0.92); overscroll-behavior: contain; outline: none; }
+.lightbox img {
+  margin: auto; max-width: 100%; max-height: calc(100vh - 32px); object-fit: contain; cursor: zoom-in;
+  border-radius: var(--r2); box-shadow: var(--shadow);
+}
+.lightbox.zoomed img { max-width: none; max-height: none; cursor: zoom-out; border-radius: 0; }
+.lb-close { position: fixed; top: 10px; right: 10px; z-index: 11; width: 34px; height: 34px; display: grid; place-items: center; color: var(--fg); cursor: pointer; padding: 0; }
+.lb-close svg { width: 16px; height: 16px; }
 
 /* pending skeleton */
 .sk { background: linear-gradient(90deg, var(--surface) 25%, var(--raised) 45%, var(--surface) 65%); background-size: 300% 100%; animation: shimmer 1.6s linear infinite; border-radius: var(--r2); border: 1px solid var(--line); }
