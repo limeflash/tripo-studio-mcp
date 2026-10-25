@@ -225,6 +225,9 @@ func (p *previewServer) local(path string) string { return p.add(previewItem{pat
 func (p *previewServer) remote(url string) string { return p.add(previewItem{url: url}) }
 
 func (p *previewServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if os.Getenv("TRIPO_MCP_DEBUG") != "" {
+		log.Printf("preview %s %s origin=%q pna=%q", r.Method, r.URL.Path, r.Header.Get("Origin"), r.Header.Get("Access-Control-Request-Private-Network"))
+	}
 	h := w.Header()
 	h.Set("Access-Control-Allow-Origin", "*")
 	h.Set("Access-Control-Allow-Private-Network", "true")

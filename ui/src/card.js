@@ -2,7 +2,7 @@
 // tool result: structuredContent is the card, _meta.tripo holds thumbnails,
 // cover and image URLs, and a 127.0.0.1 model URL. It never calls server
 // tools, so it works in hosts that do not proxy them (Claude Code).
-import { App, applyDocumentTheme, applyHostStyleVariables, applyHostFonts } from "@modelcontextprotocol/ext-apps/app-with-deps";
+import { App, applyHostFonts } from "@modelcontextprotocol/ext-apps/app-with-deps";
 import { Viewer } from "./viewer.js";
 
 const ICON = {
@@ -162,6 +162,7 @@ function mountViewer(el, model, center) {
       app.sendLog?.({ level: "info", data: "3D preview loaded" }).catch(() => {});
     },
     (err) => {
+      app.sendLog?.({ level: "error", data: `3D preview failed: ${err?.name}: ${err?.message}` }).catch(() => {});
       el.classList.remove("loading");
       center.replaceChildren(h("div", {}, h("b", {}, "3D preview unavailable"), String(err.message || err).slice(0, 180)));
     }
@@ -360,11 +361,10 @@ function render() {
   root.replaceChildren(...view.filter(Boolean));
 }
 
+// The card is always dark (a 3D stage reads best on it); only the host's
+// fonts are taken.
 function applyContext(ctx) {
-  if (!ctx) return;
-  if (ctx.theme) applyDocumentTheme(ctx.theme);
-  if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
-  if (ctx.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+  if (ctx?.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
 }
 
 app.onhostcontextchanged = (ctx) => applyContext(ctx);

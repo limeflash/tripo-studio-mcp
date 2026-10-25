@@ -13,7 +13,7 @@ const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const dl = join(tmpdir(), "tripo-card-host");
 mkdirSync(dl, { recursive: true });
 
-const srv = spawn(here("../../tripo-studio-mcp.exe"), [], { stdio: ["pipe", "pipe", "inherit"] });
+const srv = spawn(here("../../tripo-studio-mcp.exe"), [], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, TRIPO_MCP_DEBUG: "1" } });
 let buf = "";
 let next = 1;
 const waiting = new Map();
@@ -42,16 +42,17 @@ const hostJS = (await build({ entryPoints: [here("./host.js")], bundle: true, fo
 
 http
   .createServer(async (req, res) => {
+    const path = new URL(req.url, "http://host").pathname;
     const send = (type, body) => {
       res.writeHead(200, { "content-type": type });
       res.end(body);
     };
-    if (req.url === "/") return send("text/html", readFileSync(here("./host.html")));
-    if (req.url === "/host.js") return send("text/javascript", hostJS);
-    if (req.url === "/card.html") return send("text/html", resource.text);
-    if (req.url === "/meta") return send("application/json", JSON.stringify(resource._meta.ui));
-    if (req.url === "/dl") return send("text/plain", dl.replace(/\\/g, "/"));
-    if (req.url === "/call") {
+    if (path === "/") return send("text/html", readFileSync(here("./host.html")));
+    if (path === "/host.js") return send("text/javascript", hostJS);
+    if (path === "/card.html") return send("text/html", resource.text);
+    if (path === "/meta") return send("application/json", JSON.stringify(resource._meta.ui));
+    if (path === "/dl") return send("text/plain", dl.replace(/\\/g, "/"));
+    if (path === "/call") {
       let body = "";
       for await (const c of req) body += c;
       const r = await rpc("tools/call", JSON.parse(body));

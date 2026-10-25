@@ -8,7 +8,7 @@ const log = (m) => {
   $("#log").textContent = `${new Date().toLocaleTimeString()}  ${m}\n` + $("#log").textContent;
 };
 let theme = "light";
-let width = 720;
+let width = Number(new URLSearchParams(location.search).get("w")) || 720;
 
 async function run(name, args, { pendingOnly = false } = {}) {
   const csp = await (await fetch("/meta")).json().then((m) => m.csp);
@@ -43,10 +43,10 @@ async function run(name, args, { pendingOnly = false } = {}) {
     return {};
   };
   bridge.onloggingmessage = (p) => log("log: " + JSON.stringify(p.data));
+  // Listen before the card loads: it sends ui/initialize as soon as it runs.
   const initialized = new Promise((r) => (bridge.oninitialized = r));
-  frame.srcdoc = html;
-  await new Promise((r) => (frame.onload = r));
   await bridge.connect(new PostMessageTransport(frame.contentWindow, frame.contentWindow));
+  frame.srcdoc = html;
   await initialized;
   bridge.sendToolInput({ arguments: args });
   log(`${name} ${JSON.stringify(args)}`);

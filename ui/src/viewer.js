@@ -27,9 +27,11 @@ export class Viewer {
     const scene = (this.scene = new THREE.Scene());
     const pmrem = new THREE.PMREMGenerator(renderer);
     scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    const key = new THREE.DirectionalLight(0xffffff, 1.1);
+    const key = new THREE.DirectionalLight(0xfff4e8, 1.15);
     key.position.set(3, 5, 4);
-    scene.add(key);
+    const rim = new THREE.DirectionalLight(0xffb48a, 0.9); // warm back light lifts the silhouette off the dark stage
+    rim.position.set(-4, 3, -5);
+    scene.add(key, rim);
 
     this.camera = new THREE.PerspectiveCamera(32, 1, 0.01, 1000);
     const controls = (this.controls = new OrbitControls(this.camera, renderer.domElement));
@@ -114,7 +116,7 @@ export class Viewer {
     c.width = c.height = 128;
     const g = c.getContext("2d");
     const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-    grad.addColorStop(0, "rgba(0,0,0,0.34)");
+    grad.addColorStop(0, "rgba(0,0,0,0.55)");
     grad.addColorStop(1, "rgba(0,0,0,0)");
     g.fillStyle = grad;
     g.fillRect(0, 0, 128, 128);
@@ -165,7 +167,7 @@ export class Viewer {
       if (mode === "textured") m.material = m.userData.material;
       else
         m.material = new THREE.MeshStandardMaterial({
-          color: mode === "parts" ? colors[i] : 0xd9d6cf,
+          color: mode === "parts" ? colors[i] : 0xc9c4ba,
           roughness: 0.62,
           metalness: 0,
           flatShading: false,
@@ -184,7 +186,7 @@ export class Viewer {
       if (!m.userData.wire) {
         m.userData.wire = new THREE.LineSegments(
           new THREE.WireframeGeometry(m.geometry),
-          new THREE.LineBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.22, depthTest: true })
+          new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthTest: true })
         );
         m.add(m.userData.wire);
       }
