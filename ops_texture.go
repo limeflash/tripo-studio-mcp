@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -137,14 +136,6 @@ func (a *app) putImage(ctx context.Context, img *localImage) (map[string]string,
 		return nil, fmt.Errorf("not submitted, nothing charged: %s: %w", filepath.Base(img.path), err)
 	}
 	return map[string]string{"bucket": bucket, "key": key}, nil
-}
-
-// dropNext removes paid()'s "Next: tripo_wait ..." line for tools that wait
-// and report on their own.
-func dropNext(r *reply) {
-	if i := strings.LastIndex(r.Text, "\nNext: tripo_wait"); i >= 0 {
-		r.Text = r.Text[:i]
-	}
 }
 
 // ---- delivered texture resolution (src/studio/export-resolution.mjs, light) ----
@@ -635,8 +626,6 @@ func inspectModel(path string, data []byte) (format string, faces int, err error
 	}
 	return format, faces, nil
 }
-
-var controlChars = regexp.MustCompile(`[\x00-\x1f\x7f]`)
 
 func importModel(ctx context.Context, a *app, x importArgs) (reply, error) {
 	abs, err := filepath.Abs(x.FilePath)
