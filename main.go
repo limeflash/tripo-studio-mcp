@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -194,6 +195,18 @@ func (s *server) call(m message) {
 		}()
 		return t.run(ctx, s.app, p.Arguments)
 	}()
+	if err != nil && strings.HasPrefix(err.Error(), "bad arguments") {
+		// Name the real fields: a caller working from an older schema (the
+		// Node plugin's, say) can then fix the call at once.
+		var names []string
+		if ps, ok := t.InputSchema["properties"].(map[string]any); ok {
+			for k := range ps {
+				names = append(names, k)
+			}
+		}
+		sort.Strings(names)
+		err = fmt.Errorf("%w. %s takes: %s", err, t.Name, strings.Join(names, ", "))
+	}
 	if err != nil {
 		// Keep what already happened (a submitted job, its ids, its cost) above the error.
 		r.Text = strings.TrimSpace(r.Text + "\nError: " + err.Error())

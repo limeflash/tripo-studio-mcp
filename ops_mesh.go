@@ -44,7 +44,7 @@ func init() {
 			Description: "PAID, 40 credits: split a project into semantic parts (the first step of the part workflow). Not for quad or rigged models. Afterwards: tripo_list_parts shows the parts, tripo_complete_parts fills open ones, tripo_texture and tripo_remesh take part_names. Segment the untextured mesh: on a textured model Studio re-bakes each part's texture at a lower resolution. Submits at once.",
 			InputSchema: object([]string{"project_id"}, followProps, props{
 				"project_id":  str("Project to segment."),
-				"granularity": enum("Default balanced.", "coarse", "balanced", "fine"),
+				"granularity": enum("How finely to split, as Studio's Low / Medium / High: simple (fewest parts), balanced (default), detailed (most parts).", "simple", "balanced", "detailed"),
 			}),
 			UI:  true,
 			run: handler(segment),
@@ -331,12 +331,15 @@ type segmentArgs struct {
 }
 
 func segment(ctx context.Context, a *app, x segmentArgs) (reply, error) {
-	g := x.Granularity
+	// Studio's web app sends simple / balanced / detailed (its Low / Medium /
+	// High levels). The plugin's coarse / fine are refused with code 1004, so
+	// they are kept only as aliases.
+	g := map[string]string{"": "balanced", "coarse": "simple", "fine": "detailed"}[x.Granularity]
 	if g == "" {
-		g = "balanced"
+		g = x.Granularity
 	}
-	if g != "coarse" && g != "balanced" && g != "fine" {
-		return reply{}, errors.New("granularity must be coarse, balanced or fine")
+	if g != "simple" && g != "balanced" && g != "detailed" {
+		return reply{}, errors.New("granularity must be simple (fewest parts), balanced or detailed (most parts)")
 	}
 	p, err := a.preflight(ctx, x.ProjectID)
 	if err != nil {
