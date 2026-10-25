@@ -202,7 +202,7 @@ func shrinkImage(data []byte, edge int) ([]byte, string) {
 
 // previewModel returns the card's 3D preview of a model (a local path or a
 // signed URL) as inline base64: a GLB with meshopt decoded and textures at
-// most 1024 px, or the FBX as is. The bytes travel in the tool result
+// most 2048 px (smaller ones untouched), or the FBX as is. The bytes travel in the tool result
 // because hosts may stop a sandboxed widget from fetching anything, even
 // 127.0.0.1 (Chrome's local network access rules).
 func (a *app) previewModel(ctx context.Context, path, url, name string) map[string]any {
@@ -216,7 +216,7 @@ func (a *app) previewModel(ctx context.Context, path, url, name string) map[stri
 					texture = max(texture, s.Width, s.Height)
 				}
 			}
-			b, err = rewriteGLB(b, 1024)
+			b, err = rewriteGLB(b, 2048)
 		case "fbx":
 		default:
 			err = errors.New("not a GLB or FBX model")

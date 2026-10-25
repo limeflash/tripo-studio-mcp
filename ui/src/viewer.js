@@ -19,8 +19,10 @@ export class Viewer {
     const renderer = (this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }));
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    // Neutral (Khronos PBR) tone mapping keeps the texture's own colours;
+    // ACES washed out light tones.
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = 1.0;
 
     const scene = (this.scene = new THREE.Scene());
     const pmrem = new THREE.PMREMGenerator(renderer);
@@ -58,6 +60,7 @@ export class Viewer {
     const tick = () => {
       requestAnimationFrame(tick);
       if (!this.visible || !this.model) return;
+      this.stepExplode();
       controls.update();
       renderer.render(scene, this.camera);
     };
@@ -99,9 +102,12 @@ export class Viewer {
 
   setModel(root) {
     this.clear();
+    const aniso = this.renderer.capabilities.getMaxAnisotropy();
     root.traverse((o) => {
       if (!o.isMesh) return;
       o.userData.material = o.material;
+      // Sharp textures at grazing angles and when zoomed in.
+      for (const m of [].concat(o.material)) for (const v of Object.values(m || {})) if (v?.isTexture) v.anisotropy = aniso;
       this.meshes.push(o);
     });
     // Center on the floor, then frame.
@@ -114,9 +120,61 @@ export class Viewer {
     this.model = root;
     this.addShadow(size);
     this.home = { target: new THREE.Vector3(0, size.y * 0.5, 0) };
+    this.prepareExplode();
     if (this.mode !== "textured" || this.wire) this.setMode(this.mode); // keep the shading across a model switch
     this.reset();
     this.resize();
+  }
+
+  // ---- exploded view: parts slide out from the model's centre ----
+
+  prepareExplode() {
+    const root = this.model;
+    root.updateMatrixWorld(true);
+    const center = new THREE.Box3().setFromObject(root).getCenter(new THREE.Vector3());
+    const push = this.radius * 0.1; // so parts near the centre still separate
+    let minY = 0;
+    for (const m of this.meshes) {
+      const box = new THREE.Box3().setFromObject(m);
+      const c = box.getCenter(new THREE.Vector3());
+      const dir = c.clone().sub(center).multiplyScalar(0.45);
+      if (dir.lengthSq() > 1e-12) dir.addScaledVector(dir.clone().normalize(), push);
+      minY = Math.min(minY, box.min.y + dir.y);
+      // The offset is in world space; parts may sit under transformed parents.
+      const p = m.parent;
+      m.userData.home = m.position.clone();
+      m.userData.dir = p.worldToLocal(c.clone().add(dir)).sub(p.worldToLocal(c.clone()));
+    }
+    this.lift = -minY; // keeps the lowest part on the floor
+    this.rootHome = root.position.clone();
+    this.explodeT = this.explodeTo = 0;
+    this.camScale = 1;
+  }
+
+  get exploded() {
+    return this.explodeTo === 1;
+  }
+
+  setExploded(on) {
+    this.explodeTo = on ? 1 : 0;
+    this.controls.autoRotate = false;
+  }
+
+  stepExplode() {
+    if (this.explodeT === this.explodeTo) return;
+    const d = this.explodeTo - this.explodeT;
+    this.explodeT += Math.sign(d) * Math.min(Math.abs(d), 1 / 36); // ~0.6 s
+    const e = this.explodeT * this.explodeT * (3 - 2 * this.explodeT); // smoothstep
+    for (const m of this.meshes) m.position.copy(m.userData.home).addScaledVector(m.userData.dir, e);
+    this.model.position.copy(this.rootHome).setY(this.rootHome.y + this.lift * e);
+    // Pull the camera back and up with the parts, keeping the user's angle.
+    const scale = 1 + 0.45 * e;
+    const target = this.home.target.clone().setY(this.home.target.y + this.lift * e);
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    offset.multiplyScalar(scale / this.camScale);
+    this.camScale = scale;
+    this.controls.target.copy(target);
+    this.camera.position.copy(target).add(offset);
   }
 
   addShadow(size) {
@@ -158,10 +216,11 @@ export class Viewer {
   }
 
   reset() {
-    const d = this.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.08;
+    const d = this.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.08 * (this.camScale || 1);
     const dir = new THREE.Vector3(0.62, 0.42, 1).normalize();
-    this.controls.target.copy(this.home.target);
-    this.camera.position.copy(this.home.target).add(dir.multiplyScalar(d));
+    const e = this.explodeT * this.explodeT * (3 - 2 * this.explodeT);
+    this.controls.target.copy(this.home.target).setY(this.home.target.y + (this.lift || 0) * (e || 0));
+    this.camera.position.copy(this.controls.target).add(dir.multiplyScalar(d));
     this.camera.near = d / 100;
     this.camera.far = d * 100;
     this.camera.updateProjectionMatrix();
@@ -211,13 +270,20 @@ export class Viewer {
   applyWire() {
     for (const m of this.meshes) {
       if (!m.userData.wire) {
+        // Dark lines read on white clay, light and mid textures alike.
         m.userData.wire = new THREE.LineSegments(
           new THREE.WireframeGeometry(m.geometry),
-          new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthTest: true })
+          new THREE.LineBasicMaterial({ color: 0x101014, transparent: true, opacity: 0.5 })
         );
         m.add(m.userData.wire);
       }
       m.userData.wire.visible = this.wire;
+      // Push the faces back a little so the lines win the depth test.
+      for (const mat of [].concat(m.material)) {
+        mat.polygonOffset = this.wire;
+        mat.polygonOffsetFactor = mat.polygonOffsetUnits = this.wire ? 1 : 0;
+        mat.needsUpdate = true;
+      }
     }
   }
 

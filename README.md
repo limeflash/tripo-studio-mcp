@@ -66,7 +66,7 @@ Every visual result renders as an MCP App card in the chat, dark-themed so the m
 
 The card never calls back into the server, because Claude Code does not proxy those calls. The tool result carries everything it needs:
 - **`structuredContent`**: the card data.
-- **`_meta`**: input thumbnails, cover URLs, and the model itself, as a GLB with meshopt decoded and textures shrunk to 1024 px (about 1 MB).
+- **`_meta`**: input thumbnails, cover URLs, and the model itself, as a GLB with meshopt decoded and textures kept at up to 2048 px (2K arrives untouched; about 2 MB).
 
 ## Quick start
 

@@ -10,6 +10,7 @@ const ICON = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
   reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+  explode: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9.3l2.6 1.5v3L12 15.3l-2.6-1.5v-3Z"/><path d="M12 2.8v3.4M10.4 4.4 12 2.8l1.6 1.6M12 21.2v-3.4M10.4 19.6l1.6 1.6 1.6-1.6M3.6 7.4l2.9 1.7M3.6 7.4l.5 2.2M3.6 7.4l2.2-.5M20.4 16.6l-2.9-1.7M20.4 16.6l-.5-2.2M20.4 16.6l-2.2.5"/></svg>',
   wire: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 21 8v8l-9 5-9-5V8Z"/><path d="M3 8l18 8M21 8 3 16M12 3v18"/></svg>',
   spin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>',
   alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>',
@@ -151,7 +152,7 @@ function mountViewer(el, model, center) {
   // One viewer (one WebGL context) for the card's lifetime: a re-render moves
   // its canvas into the new stage, a model switch reloads it in place.
   if (viewer) viewer.attach(el);
-  else viewer = new Viewer(el);
+  else viewer = window.tripoViewer = new Viewer(el); // window.tripoViewer: for debugging in a test host
   const v = viewer;
   if (viewerURL === key && v.model) {
     ready(v);
@@ -212,11 +213,13 @@ function controls(el, v) {
   const wire = h("button", { class: "icon-btn glass", "aria-label": "Wireframe", title: "Wireframe", "aria-pressed": String(v.wire), html: ICON.wire,
     onclick: (e) => { v.setWire(!v.wire); e.currentTarget.setAttribute("aria-pressed", String(v.wire)); } });
   const reset = h("button", { class: "icon-btn glass", "aria-label": "Reset view", title: "Reset view", html: ICON.reset, onclick: () => v.reset() });
+  const explode = s.parts > 1 && h("button", { class: "icon-btn glass", "aria-label": "Explode parts", title: "Explode parts", "aria-pressed": String(v.exploded), html: ICON.explode,
+    onclick: (e) => { v.setExploded(!v.exploded); e.currentTarget.setAttribute("aria-pressed", String(v.exploded)); } });
   const facts = [`${fmt(s.tris)} tris`, s.parts > 1 ? `${s.parts} parts` : null, s.tex ? `${s.tex >= 1024 ? s.tex / 1024 + "K" : s.tex + "px"} tex` : null].filter(Boolean);
   el.append(
     h("div", { class: "overlay tl" }, h("div", { class: "hint glass" }, "Drag to orbit · Ctrl + scroll to zoom")),
     h("div", { class: "overlay bl" }, h("div", { class: "stats glass" }, ...facts.map((f) => h("span", {}, f)))),
-    h("div", { class: "overlay br" }, seg, wire, reset)
+    h("div", { class: "overlay br" }, seg, explode, wire, reset)
   );
   renderParts();
 
