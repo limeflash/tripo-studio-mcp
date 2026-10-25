@@ -206,6 +206,7 @@ func (s *server) call(m message) {
 	}
 	res := map[string]any{"content": []map[string]any{{"type": "text", "text": r.Text}}, "isError": err != nil}
 	if r.Card != nil {
+		r.Card.Text = r.Text
 		res["structuredContent"] = r.Card
 	}
 	if r.Meta != nil {

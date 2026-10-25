@@ -232,11 +232,32 @@ func (a *app) call(ctx context.Context, method, path string, body, out any) erro
 	}
 	err = a.callAs(ctx, s, method, path, body, out)
 	var refused *apiError
-	if err != nil && method == "GET" && !errors.Is(err, errAuth) && !errors.As(err, &refused) && ctx.Err() == nil {
-		time.Sleep(time.Second) // reads are safe to repeat; Tripo's gateway sometimes answers 502
+	if err != nil && repeatable(method, path) && !errors.Is(err, errAuth) && !errors.As(err, &refused) && ctx.Err() == nil {
+		time.Sleep(time.Second) // Tripo's gateway sometimes answers 502
 		err = a.callAs(ctx, s, method, path, body, out)
 	}
 	return err
+}
+
+// repeatable reports whether a request is safe to send twice: reads, and the
+// POSTs that only mint a token, check something or report state. Paid
+// submits are never repeated.
+func repeatable(method, path string) bool {
+	if method == "GET" {
+		return true
+	}
+	for _, p := range []string{
+		"/v2/studio/storage/temporary_token", "/v2/studio/audit/image", "/v2/studio/progress",
+		"/v2/studio/operation/symmetry_check", "/v2/studio/operation/quota", "/v2/studio/operation/pre_rig_check",
+		"/v2/studio/operation/uv_edit/context", "/v2/studio/operation/get_retexture", "/v2/studio/operation/download_with_name",
+		"/v2/studio/image/image_assets", "/v2/studio/image/get_image_asset",
+		"/v2/studio/motion/get_task", "/v2/studio/motion/get_asset", "/v2/studio/motion/list_assets",
+	} {
+		if path == p {
+			return true
+		}
+	}
+	return false
 }
 
 // credits reads the wallet balance; ok is false when Tripo does not say.

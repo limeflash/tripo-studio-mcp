@@ -25,7 +25,7 @@ func init() {
 	register(
 		tool{
 			Name:        "tripo_list_parts",
-			Description: "List a project's parts: the mesh names of its current model with the face count of each (read from the GLB's accessor metadata, so meshopt-compressed models work; triangles). Use these exact names as part_names in tripo_complete_parts, tripo_texture and tripo_remesh. A project that is not segmented has one part: tripo_segment (40 credits) splits it. Free.",
+			Description: "List a project's parts: the part (node) names of its current model with the face count of each (read from the GLB's accessor metadata, so meshopt-compressed models work; triangles). Use these exact names as part_names in tripo_complete_parts, tripo_texture and tripo_remesh. A project that is not segmented has one part: tripo_segment (40 credits) splits it. Free.",
 			InputSchema: object([]string{"project_id"}, props{
 				"project_id":  str("Project id."),
 				"operator_id": str("A specific version; default the current one."),
@@ -35,7 +35,7 @@ func init() {
 		},
 		tool{
 			Name:        "tripo_complete_parts",
-			Description: "PAID: fill in the hidden or open sides of selected parts of a segmented project, so each part is a closed solid. mode ai_completion (default) regenerates the missing regions; quick_cap closes open boundaries. part_names are required (exact names from tripo_list_parts). The project must be segmented / multi-mesh. Priced by Studio's table: QuickCap 0 and AICompletion 0 credits at the last check, so confirm with dry_run. Submits at once.",
+			Description: "PAID: fill in the hidden or open sides of selected parts of a segmented project, so each part is a closed solid. mode ai_completion (default) regenerates the missing regions; quick_cap closes open boundaries. part_names are required (exact names from tripo_list_parts). The project must be segmented / multi-mesh. Priced by Studio's table: QuickCap 0 and AICompletion 0 credits (confirmed 2026-10-25), but confirm with dry_run. AI completion adds geometry (a 42-part P1 model went from 18,163 to 27,209 faces): remesh afterwards to keep a face budget. Submits at once.",
 			InputSchema: object([]string{"project_id", "part_names"}, followProps, props{
 				"project_id": str("Segmented project."),
 				"mode":       enum("Default ai_completion.", "ai_completion", "quick_cap"),

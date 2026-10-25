@@ -41,7 +41,7 @@ func init() {
 		},
 		tool{
 			Name:        "tripo_segment",
-			Description: "PAID, 40 credits: split a project into semantic parts (the first step of the part workflow). Not for quad or rigged models. Afterwards: tripo_list_parts shows the parts, tripo_complete_parts fills open ones, tripo_texture and tripo_remesh take part_names. Submits at once.",
+			Description: "PAID, 40 credits: split a project into semantic parts (the first step of the part workflow). Not for quad or rigged models. Afterwards: tripo_list_parts shows the parts, tripo_complete_parts fills open ones, tripo_texture and tripo_remesh take part_names. Segment the untextured mesh: on a textured model Studio re-bakes each part's texture at a lower resolution. Submits at once.",
 			InputSchema: object([]string{"project_id"}, followProps, props{
 				"project_id":  str("Project to segment."),
 				"granularity": enum("Default balanced.", "coarse", "balanced", "fine"),
@@ -357,9 +357,12 @@ func segment(ctx context.Context, a *app, x segmentArgs) (reply, error) {
 	})
 	if err == nil && !x.DryRun {
 		r.line("Next, once it is done: tripo_list_parts project_id=%s (part names and face counts); then tripo_complete_parts to fill open parts, and tripo_texture / tripo_remesh with part_names to work on single parts.", x.ProjectID)
-		if r.Card != nil {
+		if r.Card != nil && len(r.Card.Next) == 0 { // finish() already offers it once the job is done
 			r.Card.Next = append(r.Card.Next, cardAction{"List parts", fmt.Sprintf("List the parts of Tripo project %s with tripo_list_parts.", x.ProjectID)})
 		}
+	}
+	if err == nil && p.is("is_textured") {
+		r.line("Note: Studio re-bakes the texture per part when it segments a textured model, at a lower resolution (a 2K map became 42 maps of 1K and less in a test). Segment the untextured mesh first, then texture, to keep the resolution.")
 	}
 	return r, err
 }

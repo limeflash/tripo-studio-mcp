@@ -94,3 +94,18 @@ func TestViewsAndCookie(t *testing.T) {
 		}
 	}
 }
+
+func TestRepeatable(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/v2/studio/storage/temporary_token":      true,
+		"/v2/studio/progress":                     true,
+		"/v2/studio/operation/multiview_to_model": false,
+		"/v2/studio/operation/texture_model":      false,
+		"/v2/studio/operation/ai_segmentation":    false,
+		"/v2/studio/image/gen_image_v2":           false,
+	} {
+		if repeatable("POST", path) != want {
+			t.Errorf("repeatable(POST, %s) = %v", path, !want)
+		}
+	}
+}

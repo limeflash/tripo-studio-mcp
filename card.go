@@ -46,6 +46,9 @@ func (r *reply) meta(key string, v any) {
 
 // card is the result widget's data contract; ui/src/card.js renders it.
 type card struct {
+	// Text repeats the reply text: Claude Code shows the model structuredContent
+	// rather than content when both are present, so the prose must travel here too.
+	Text       string         `json:"text,omitempty"`
 	Kind       string         `json:"kind"`             // job | project | projects | images
 	Title      string         `json:"title"`            // e.g. "Smart Mesh P1.0"
 	Status     string         `json:"status,omitempty"` // quote | submitted | running | done | failed | saved
