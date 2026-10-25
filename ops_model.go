@@ -622,6 +622,10 @@ func (a *app) followAll(ctx context.Context, r *reply, j job, all []receipt, bat
 	deadline := time.Now().Add(wait)
 	var errs []error
 	saved, failed := 0, false
+	// One preview per model, in card.Items order, so the card can switch
+	// between them. ponytail: inline previews stop at ~24 MB of base64; add
+	// paging if batches of 30 textured models become common.
+	models, covers, budget := make([]any, n), map[string]string{}, 24<<20
 	for i, rc := range all {
 		sub := reply{Card: &card{Kind: "job", Title: j.Title}}
 		sub.line("Model %d of %d:", i+1, n)
@@ -629,17 +633,36 @@ func (a *app) followAll(ctx context.Context, r *reply, j job, all []receipt, bat
 		err := a.finish(ctx, &sub, rc.OperatorID, rc.ProjectID, max(time.Until(deadline), 0), dir)
 		r.line("%s", sub.Text)
 		r.Card.Saved = append(r.Card.Saved, sub.Card.Saved...)
+		item := r.Card.Items[i]
+		item.Status = sub.Card.Status
+		if len(sub.Card.Saved) > 0 {
+			item.Saved = sub.Card.Saved[0]
+		}
 		switch {
 		case err != nil:
 			failed = true
+			item.Status = "failed"
 			errs = append(errs, fmt.Errorf("model %d: %w", i+1, err))
 		case sub.Card.Status == "saved":
 			saved++
 		}
-		if m, ok := sub.Meta["model"]; ok && r.Meta["model"] == nil {
-			r.meta("model", m)
+		if u, ok := sub.Meta["cover"].(string); ok {
+			covers[rc.ProjectID] = u
+		}
+		if m, ok := sub.Meta["model"].(map[string]any); ok {
+			if data, _ := m["data"].(string); len(data) > budget {
+				m = map[string]any{"error": "too many models to preview inline; open this one with tripo_project", "name": m["name"]}
+			} else {
+				budget -= len(data)
+			}
+			models[i] = m
+			if r.Meta["model"] == nil {
+				r.meta("model", m)
+			}
 		}
 	}
+	r.meta("models", models)
+	r.meta("covers", covers)
 	switch {
 	case saved == n:
 		r.Card.Status = "saved"

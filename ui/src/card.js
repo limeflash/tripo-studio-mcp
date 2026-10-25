@@ -38,7 +38,7 @@ const STATUS = {
 
 const root = document.getElementById("root");
 const app = new App({ name: "Tripo Studio card", version: __VERSION__ }, {}, { autoResize: true });
-const state = { input: null, result: null, cancelled: null, started: Date.now() };
+const state = { input: null, result: null, cancelled: null, started: Date.now(), sel: 0 };
 let viewer = null;
 let viewerURL = "";
 let timer = 0;
@@ -147,28 +147,48 @@ function mountViewer(el, model, center) {
     controls(el, v);
   };
   if (model.texture) el.dataset.texture = model.texture;
-  const key = `${model.name}:${model.data?.length}`;
-  if (viewer && viewerURL === key) {
-    // Re-render: move the live canvas into the new stage.
-    viewer.stage = el;
-    el.prepend(viewer.renderer.domElement);
-    new ResizeObserver(() => viewer.resize()).observe(el);
-    ready(viewer);
+  const key = `${model.name}:${model.data?.length}:${model.error || ""}`;
+  // One viewer (one WebGL context) for the card's lifetime: a re-render moves
+  // its canvas into the new stage, a model switch reloads it in place.
+  if (viewer) viewer.attach(el);
+  else viewer = new Viewer(el);
+  const v = viewer;
+  if (viewerURL === key && v.model) {
+    ready(v);
     return;
   }
   viewerURL = key;
-  const v = (viewer = new Viewer(el));
   v.load(model).then(
     () => {
+      if (viewerURL !== key) return; // another model was picked meanwhile
       ready(v);
       app.sendLog?.({ level: "info", data: "3D preview loaded" }).catch(() => {});
     },
     (err) => {
+      if (viewerURL !== key) return;
+      v.clear();
       app.sendLog?.({ level: "error", data: `3D preview failed: ${err?.name}: ${err?.message}` }).catch(() => {});
       el.classList.remove("loading");
       center.replaceChildren(h("div", {}, h("b", {}, "3D preview unavailable"), String(err.message || err).slice(0, 180)));
     }
   );
+}
+
+// switcherBlock lets the card flip between the models of one job (batch,
+// P2 variants); each has its own preview in _meta.tripo.models.
+function switcherBlock(d, meta) {
+  const items = d.items || [];
+  if (items.length < 2) return null;
+  const covers = meta.covers || {};
+  return h("div", { class: "switcher", role: "tablist", "aria-label": "Models" }, ...items.map((it, i) =>
+    h("button", {
+      class: `pick${i === state.sel ? " on" : ""}${it.status === "failed" ? " bad" : ""}`,
+      role: "tab", "aria-selected": String(i === state.sel), title: it.saved || it.id,
+      onclick: () => { if (state.sel !== i) { state.sel = i; render(); } },
+    },
+      covers[it.id] ? h("img", { src: covers[it.id], alt: "" }) : h("span", { class: "num" }, String(i + 1)),
+      h("span", {}, `Model ${i + 1}`),
+      it.status === "failed" ? h("i", { class: "dot" }) : null)));
 }
 
 function controls(el, v) {
@@ -206,13 +226,17 @@ function controls(el, v) {
     host.replaceChildren();
     const parts = v.parts();
     if (parts.length < 2) return;
-    host.append(
-      h("div", { class: "label" }, "Parts", h("em", {}, `${parts.length} · click to hide or show`)),
-      h("div", { class: "chips" }, ...parts.map((p) =>
-        h("button", { class: `chip${p.mesh.visible ? "" : " hidden"}`, title: p.name,
-          onclick: (e) => e.currentTarget.classList.toggle("hidden", !v.togglePart(p.mesh)) },
-          h("i", { style: v.mode === "parts" ? `background:${p.color};border-radius:3px` : "" }), p.name)))
-    );
+    const SHOWN = 16;
+    const chip = (p) =>
+      h("button", { class: `chip${p.mesh.visible ? "" : " hidden"}`, title: p.name,
+        onclick: (e) => e.currentTarget.classList.toggle("hidden", !v.togglePart(p.mesh)) },
+        h("i", { style: v.mode === "parts" ? `background:${p.color};border-radius:3px` : "" }), p.name);
+    const chips = h("div", { class: "chips" }, ...parts.slice(0, SHOWN).map(chip));
+    if (parts.length > SHOWN) {
+      const more = h("button", { class: "chip", onclick: () => more.replaceWith(...parts.slice(SHOWN).map(chip)) }, `+ ${parts.length - SHOWN} more`);
+      chips.append(more);
+    }
+    host.append(h("div", { class: "label" }, "Parts", h("em", {}, `${parts.length} · click to hide or show`)), chips);
   }
 }
 
@@ -245,14 +269,17 @@ function factRow(label, value, extra) {
 }
 
 function factsBlock(d) {
+  // A multi-model job shows the facts of the model picked in the switcher.
+  const it = (d.items?.length > 1 && d.kind === "job") ? d.items[state.sel] : null;
   const rows = [];
-  for (const path of d.saved || []) rows.push(factRow("Saved", path));
-  const pid = d.project?.id || d.project_id;
+  for (const path of it ? [it.saved].filter(Boolean) : d.saved || []) rows.push(factRow("Saved", path));
+  const pid = it ? it.id : d.project?.id || d.project_id;
   if (pid) {
-    const url = d.project?.url;
+    const url = it ? it.url : d.project?.url;
     rows.push(factRow("Project", pid, url && h("button", { class: "ghost", onclick: () => openURL(url) }, icon("open"), "Studio")));
   }
-  if (d.operator_id) rows.push(factRow("Job", d.operator_id));
+  const op = it ? it.operator_id : d.operator_id;
+  if (op) rows.push(factRow("Job", op));
   return rows.length ? h("div", { class: "facts" }, ...rows) : null;
 }
 
@@ -285,12 +312,17 @@ function jobView(d, meta, isError) {
   const progress = running ? d.progress || 0 : null;
   // Before there is a model, the input views are the picture.
   const viewsOnly = !meta.model && !meta.cover && !running && d.inputs?.length;
+  const multi = d.items?.length > 1 && Array.isArray(meta.models);
+  const it = multi ? d.items[state.sel] : null;
+  const model = multi ? meta.models[state.sel] || { error: it?.status === "failed" ? "this model failed" : "no preview for this model yet", name: it?.id } : meta.model;
+  const cover = multi ? meta.covers?.[it?.id] : meta.cover;
   return [
     header(d.title, subtitle, isError && !d.status ? "failed" : d.status, costBlock(d.cost, d.status)),
     alertBlock(d.error),
     d.status === "quote" ? h("div", { class: "note" }, "Nothing was uploaded or charged. Approve to run it.") : null,
-    viewsOnly ? viewsBlock(d.inputs, meta.thumbs) : stage({ model: meta.model, cover: meta.cover, thumbs: meta.thumbs, progress,
-      pending: running ? ["Tripo is working on it", "Ask Claude to wait for the job, or pass download_to next time."] : null }),
+    viewsOnly ? viewsBlock(d.inputs, meta.thumbs) : stage({ model, cover, thumbs: meta.thumbs, progress,
+      pending: running && !multi ? ["Tripo is working on it", "Ask Claude to wait for the job, or pass download_to next time."] : null }),
+    switcherBlock(d, meta),
     h("div", { "data-parts": "" }),
     viewsOnly ? null : inputsBlock(d.inputs, meta.thumbs),
     settingsBlock(d.settings),
@@ -389,6 +421,7 @@ app.ontoolinput = (p) => {
 };
 app.ontoolresult = (r) => {
   state.result = r;
+  state.sel = 0;
   render();
 };
 app.ontoolcancelled = (p) => {

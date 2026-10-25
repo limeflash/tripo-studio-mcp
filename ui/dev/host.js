@@ -71,7 +71,27 @@ const scenarios = {
   Gallery: () => run("tripo_list_projects", {}),
   Pending: () => run("tripo_generate_model", { views_dir: VIEWS, tier: "smart_mesh", face_limit: 19500 }, { pendingOnly: true }),
   Error: () => run("tripo_project", { project_id: "does-not-exist" }),
+  "Batch (2 models)": () => runBatch([PROJECT, "29844ef1-4f9c-4700-bd53-42a5c9f2c27e"]),
 };
+
+// runBatch fakes a multi-model job result from real project cards, to test
+// the card's model switcher without spending credits.
+async function runBatch(ids) {
+  const parts = await Promise.all(ids.map((id) => fetch("/call", { method: "POST", body: JSON.stringify({ name: "tripo_project", arguments: { project_id: id } }) }).then((r) => r.json())));
+  const result = {
+    content: [{ type: "text", text: "batch" }],
+    structuredContent: {
+      kind: "job", title: "Smart Mesh P1.0", status: "saved",
+      cost: { credits: 35 * ids.length, breakdown: `(GenerateBaseNexus 35) × ${ids.length}`, updated: "2026-10-25", balance: 24890 },
+      settings: [["Faces", "19,500"], ["Topology", "triangles"], ["Visibility", "private"], ["Images", String(ids.length)]],
+      items: parts.map((p, i) => ({ ...p.structuredContent.project, name: `model ${i + 1}`, status: "saved", saved: `D:/out/model-0${i + 1}/model.glb` })),
+      saved: ids.map((_, i) => `D:/out/model-0${i + 1}/model.glb`),
+    },
+    _meta: { tripo: { model: parts[0]._meta.tripo.model, models: parts.map((p) => p._meta.tripo.model), covers: Object.fromEntries(parts.map((p, i) => [ids[i], p._meta.tripo.cover])) } },
+  };
+  await run("tripo_generate_model", { image_paths: ["a.png", "b.png"], mode: "batch" }, { pendingOnly: true });
+  window.lastBridge.sendToolResult(result);
+}
 for (const [label, fn] of Object.entries(scenarios)) {
   const b = document.createElement("button");
   b.textContent = label;

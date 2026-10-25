@@ -12,7 +12,6 @@ const PART_COLORS = (n) =>
 
 export class Viewer {
   constructor(stage) {
-    this.stage = stage;
     this.meshes = [];
     this.mode = "textured";
     this.wire = false;
@@ -22,7 +21,6 @@ export class Viewer {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
-    stage.prepend(renderer.domElement);
 
     const scene = (this.scene = new THREE.Scene());
     const pmrem = new THREE.PMREMGenerator(renderer);
@@ -55,9 +53,8 @@ export class Viewer {
       { passive: false }
     );
 
-    new ResizeObserver(() => this.resize()).observe(stage);
     this.visible = true;
-    new IntersectionObserver(([e]) => (this.visible = e.isIntersecting)).observe(stage);
+    this.attach(stage);
     const tick = () => {
       requestAnimationFrame(tick);
       if (!this.visible || !this.model) return;
@@ -65,6 +62,17 @@ export class Viewer {
       renderer.render(scene, this.camera);
     };
     tick();
+  }
+
+  // attach moves the canvas into a stage element; the card re-renders its
+  // DOM, but the WebGL context lives on.
+  attach(stage) {
+    this.stage = stage;
+    stage.prepend(this.renderer.domElement);
+    this.ro?.disconnect();
+    this.io?.disconnect();
+    (this.ro = new ResizeObserver(() => this.resize())).observe(stage);
+    (this.io = new IntersectionObserver(([e]) => (this.visible = e.isIntersecting))).observe(stage);
   }
 
   resize() {
@@ -90,6 +98,7 @@ export class Viewer {
   }
 
   setModel(root) {
+    this.clear();
     root.traverse((o) => {
       if (!o.isMesh) return;
       o.userData.material = o.material;
@@ -105,6 +114,7 @@ export class Viewer {
     this.model = root;
     this.addShadow(size);
     this.home = { target: new THREE.Vector3(0, size.y * 0.5, 0) };
+    if (this.mode !== "textured" || this.wire) this.setMode(this.mode); // keep the shading across a model switch
     this.reset();
     this.resize();
   }
@@ -126,6 +136,25 @@ export class Viewer {
     plane.rotation.x = -Math.PI / 2;
     plane.position.y = 0.001 * this.radius;
     this.scene.add(plane);
+    this.shadow = plane;
+  }
+
+  // clear removes the current model so another can be shown in the same
+  // WebGL context (browsers cap how many a page may hold).
+  clear() {
+    for (const o of [this.model, this.shadow]) {
+      if (!o) continue;
+      this.scene.remove(o);
+      o.traverse((n) => {
+        n.geometry?.dispose();
+        for (const m of [].concat(n.material || [], n.userData?.material || [])) {
+          for (const v of Object.values(m)) if (v?.isTexture) v.dispose();
+          m.dispose?.();
+        }
+      });
+    }
+    this.model = this.shadow = null;
+    this.meshes = [];
   }
 
   reset() {

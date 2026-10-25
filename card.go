@@ -83,7 +83,9 @@ type projectCard struct {
 	Type       string     `json:"type,omitempty"`
 	Flags      []cardFlag `json:"flags,omitempty"`
 	Running    bool       `json:"running,omitempty"`
-	URL        string     `json:"url,omitempty"` // the project in Studio's workspace
+	URL        string     `json:"url,omitempty"`    // the project in Studio's workspace
+	Status     string     `json:"status,omitempty"` // for the models of a multi-model job
+	Saved      string     `json:"saved,omitempty"`
 }
 
 func studioURL(projectID string) string {
