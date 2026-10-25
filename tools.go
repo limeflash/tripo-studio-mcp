@@ -689,29 +689,37 @@ func (a *app) finish(ctx context.Context, r *reply, op, projectID string, timeou
 	if err != nil {
 		return err
 	}
-	a.showProject(r, p)
-	r.Card.Next = nextSteps(p)
 	r.line("Done. %s", describe(p))
 	saved := ""
 	if downloadTo != "" {
 		path, line, err := a.download(ctx, p, downloadTo, "", 0)
 		if err != nil {
+			a.showProject(ctx, r, p)
 			return err
 		}
 		r.line("%s", line)
 		r.Card.Status, r.Card.Saved, saved = "saved", []string{path}, path
-		r.meta("model", map[string]any{"url": a.preview.local(path), "name": filepath.Base(path)})
+		r.meta("model", a.previewModel(ctx, path, "", filepath.Base(path)))
 	}
+	a.showProject(ctx, r, p) // after the download, so the preview is the saved file
+	if r.Card.Title == "Job" {
+		r.Card.Title = p.Name
+	}
+	r.Card.Next = nextSteps(p)
 	a.logJob(jobRecord{OperatorID: op, ProjectID: projectID, Status: "done", Saved: saved})
 	return nil
 }
 
 // nextSteps suggests the usual follow-up as a widget button.
 func nextSteps(p *project) []cardAction {
+	var next []cardAction
 	if !p.is("is_textured") {
-		return []cardAction{{"Texture 2K · 10 credits", fmt.Sprintf("Texture Tripo project %s at 2K from the same views.", p.ID)}}
+		next = append(next, cardAction{"Texture 2K · 10 credits", fmt.Sprintf("Texture Tripo project %s at 2K from the same views.", p.ID)})
 	}
-	return nil
+	if p.is("is_segmented") {
+		next = append(next, cardAction{"List parts", fmt.Sprintf("List the parts of Tripo project %s.", p.ID)})
+	}
+	return next
 }
 
 func describe(p *project) string {
@@ -747,16 +755,17 @@ func download(ctx context.Context, a *app, x downloadArgs) (reply, error) {
 		return reply{}, err
 	}
 	r := reply{Card: &card{Kind: "project", Title: p.Name, Status: "saved"}}
-	a.showProject(&r, p)
 	path, line, err := a.download(ctx, p, x.Path, x.Format, x.TextureSize)
 	if err != nil {
 		r.Card.Status = "failed"
+		a.showProject(ctx, &r, p)
 		return r, err
 	}
 	r.Text, r.Card.Saved = line, []string{path}
-	if x.Format == "" || x.Format == "glb" {
-		r.meta("model", map[string]any{"url": a.preview.local(path), "name": filepath.Base(path)})
+	if k := sniff(head(path)); k == "glb" || k == "fbx" {
+		r.meta("model", a.previewModel(ctx, path, "", filepath.Base(path)))
 	}
+	a.showProject(ctx, &r, p)
 	return r, nil
 }
 
@@ -856,7 +865,7 @@ func projectInfo(ctx context.Context, a *app, x projectArgs) (reply, error) {
 		return reply{}, err
 	}
 	r := reply{Card: &card{Kind: "project", Title: p.Name, Status: p.Status}}
-	a.showProject(&r, p)
+	a.showProject(ctx, &r, p)
 	r.Card.Next = nextSteps(p)
 	r.line("%s", describe(p))
 	return r, nil

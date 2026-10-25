@@ -4,19 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
-	"log"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -135,7 +132,7 @@ func (p *project) cover() string {
 
 // showProject puts a project, its cover and a 3D preview of its model on
 // the reply's card.
-func (a *app) showProject(r *reply, p *project) {
+func (a *app) showProject(ctx context.Context, r *reply, p *project) {
 	if r.Card == nil {
 		r.Card = &card{Kind: "project", Title: p.Name}
 	}
@@ -144,8 +141,8 @@ func (a *app) showProject(r *reply, p *project) {
 	if u := p.cover(); u != "" {
 		r.meta("cover", u)
 	}
-	if p.ModelURL != "" {
-		r.meta("model", map[string]any{"url": a.preview.remote(p.ModelURL), "name": p.Name})
+	if _, done := r.Meta["model"]; !done && p.ModelURL != "" {
+		r.meta("model", a.previewModel(ctx, "", p.ModelURL, p.Name))
 	}
 }
 
@@ -153,148 +150,110 @@ func (a *app) showProject(r *reply, p *project) {
 
 // thumb shrinks an input image to a small data URL for the card.
 func thumb(img *localImage) string {
-	src, _, err := image.Decode(bytes.NewReader(img.data))
-	if err != nil {
-		return ""
+	b, mime := shrinkImage(img.data, 320)
+	if b == nil {
+		if _, _, err := image.DecodeConfig(bytes.NewReader(img.data)); err != nil {
+			return ""
+		}
+		b, mime = img.data, "image/"+img.format // already small
 	}
-	const edge = 192
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b)
+}
+
+// shrinkImage scales an encoded image down to at most edge px and re-encodes
+// it, JPEG when opaque and PNG otherwise. It returns nil when the image is
+// already small enough or cannot be decoded.
+func shrinkImage(data []byte, edge int) ([]byte, string) {
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, ""
+	}
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
-	if w > edge || h > edge {
-		if w >= h {
-			w, h = edge, max(1, h*edge/w)
-		} else {
-			w, h = max(1, w*edge/h), edge
-		}
+	if w <= edge && h <= edge {
+		return nil, ""
+	}
+	if w >= h {
+		w, h = edge, max(1, h*edge/w)
+	} else {
+		w, h = max(1, w*edge/h), edge
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
 	draw.CatmullRom.Scale(dst, dst.Bounds(), src, b, draw.Src, nil)
 	var buf bytes.Buffer
 	if dst.Opaque() {
-		if jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 82}) != nil {
-			return ""
+		if jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}) != nil {
+			return nil, ""
 		}
-		return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+		return buf.Bytes(), "image/jpeg"
 	}
 	if png.Encode(&buf, dst) != nil {
-		return ""
+		return nil, ""
 	}
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+	return buf.Bytes(), "image/png"
 }
 
-// ---- local preview server ----
+// ---- 3D preview ----
 
-// previewServer serves models to the widget from 127.0.0.1. Tripo's CDN
-// sends no CORS headers, so the widget cannot fetch a model URL itself.
-type previewServer struct {
-	origin string // http://127.0.0.1:PORT, "" if it could not start
-	app    *app
-	mu     sync.Mutex
-	items  map[string]previewItem
-}
-
-type previewItem struct {
-	path string // a local file, or
-	url  string // a signed Tripo URL, fetched on demand
-}
-
-func (a *app) startPreview() {
-	p := &previewServer{app: a, items: map[string]previewItem{}}
-	a.preview = p
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		log.Printf("preview server: %v", err)
-		return
-	}
-	p.origin = "http://" + ln.Addr().String()
-	go http.Serve(ln, p)
-}
-
-func (p *previewServer) add(it previewItem) string {
-	if p == nil || p.origin == "" {
-		return ""
-	}
-	token := newUUID()
-	p.mu.Lock()
-	p.items[token] = it
-	p.mu.Unlock()
-	return p.origin + "/m/" + token
-}
-
-func (p *previewServer) local(path string) string { return p.add(previewItem{path: path}) }
-func (p *previewServer) remote(url string) string { return p.add(previewItem{url: url}) }
-
-func (p *previewServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if os.Getenv("TRIPO_MCP_DEBUG") != "" {
-		log.Printf("preview %s %s origin=%q pna=%q", r.Method, r.URL.Path, r.Header.Get("Origin"), r.Header.Get("Access-Control-Request-Private-Network"))
-	}
-	h := w.Header()
-	h.Set("Access-Control-Allow-Origin", "*")
-	h.Set("Access-Control-Allow-Private-Network", "true")
-	h.Set("Cache-Control", "no-store")
-	if r.Method == http.MethodOptions {
-		h.Set("Access-Control-Allow-Methods", "GET")
-		h.Set("Access-Control-Allow-Headers", "*")
-		return
-	}
-	p.mu.Lock()
-	it, ok := p.items[strings.TrimPrefix(r.URL.Path, "/m/")]
-	p.mu.Unlock()
-	if !ok || r.Method != http.MethodGet {
-		http.NotFound(w, r)
-		return
-	}
-	path := it.path
-	if path == "" {
-		// ponytail: the cache is never pruned; add an age limit if it grows large.
-		path = filepath.Join(p.app.dir, "preview-cache", sha256Hex([]byte(strings.SplitN(it.url, "?", 2)[0])))
-		if _, err := os.Stat(path); err != nil {
-			if err := p.fetch(r.Context(), it.url, path); err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
+// previewModel returns the card's 3D preview of a model (a local path or a
+// signed URL) as inline base64: a GLB with meshopt decoded and textures at
+// most 1024 px, or the FBX as is. The bytes travel in the tool result
+// because hosts may stop a sandboxed widget from fetching anything, even
+// 127.0.0.1 (Chrome's local network access rules).
+func (a *app) previewModel(ctx context.Context, path, url, name string) map[string]any {
+	b, err := a.modelBytes(ctx, path, url)
+	if err == nil {
+		switch sniff(b) {
+		case "glb":
+			b, err = rewriteGLB(b, 1024)
+		case "fbx":
+		default:
+			err = errors.New("not a GLB or FBX model")
 		}
 	}
-	b, err := os.ReadFile(path)
+	if err == nil && len(b) > 16<<20 {
+		err = fmt.Errorf("the model is too large for an inline preview (%s)", size(int64(len(b))))
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
+		return map[string]any{"error": err.Error(), "name": name}
 	}
-	if sniff(b) == "glb" {
-		// The widget may not run WebAssembly, which three.js needs for meshopt.
-		if b, err = decodeMeshoptGLB(b); err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			return
-		}
-		h.Set("Content-Type", "model/gltf-binary")
-	} else {
-		h.Set("Content-Type", "application/octet-stream")
-		h.Set("X-Model-Format", sniff(b))
-	}
-	h.Set("Access-Control-Expose-Headers", "X-Model-Format")
-	w.Write(b)
+	return map[string]any{"data": base64.StdEncoding.EncodeToString(b), "format": sniff(b), "name": name}
 }
 
-func (p *previewServer) fetch(ctx context.Context, url, path string) error {
-	body, err := p.app.open(ctx, url)
+// modelBytes reads a local model, or downloads a signed one into a cache
+// keyed by its URL without the signature.
+func (a *app) modelBytes(ctx context.Context, path, url string) ([]byte, error) {
+	if path != "" {
+		return os.ReadFile(path)
+	}
+	// ponytail: the cache is never pruned; add an age limit if it grows large.
+	cache := filepath.Join(a.dir, "preview-cache", sha256Hex([]byte(strings.SplitN(url, "?", 2)[0])))
+	if b, err := os.ReadFile(cache); err == nil {
+		return b, nil
+	}
+	body, err := a.open(ctx, url)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer body.Close()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".part-*")
+	b, err := io.ReadAll(io.LimitReader(body, 512<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer os.Remove(tmp.Name())
-	_, err = io.Copy(tmp, io.LimitReader(body, 512<<20))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
+	if os.MkdirAll(filepath.Dir(cache), 0o700) == nil {
+		os.WriteFile(cache, b, 0o600)
 	}
+	return b, nil
+}
+
+// head returns the first bytes of a file, enough for sniff.
+func head(path string) []byte {
+	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil
 	}
-	return os.Rename(tmp.Name(), path)
+	defer f.Close()
+	b := make([]byte, 32)
+	n, _ := io.ReadFull(f, b)
+	return b[:n]
 }

@@ -335,7 +335,7 @@ func listParts(ctx context.Context, a *app, x listPartsArgs) (reply, error) {
 		return reply{}, err
 	}
 	r := reply{Card: &card{Kind: "project", Title: p.Name, Status: p.Status}}
-	a.showProject(&r, p)
+	a.showProject(ctx, &r, p)
 	d, err := a.modelDoc(ctx, p)
 	if err != nil {
 		return r, err

@@ -199,7 +199,7 @@ func exportModel(ctx context.Context, a *app, x exportArgs) (reply, error) {
 		return reply{}, err
 	}
 	r := reply{Card: &card{Kind: "project", Title: p.Name, Status: "quote"}}
-	a.showProject(&r, p)
+	a.showProject(ctx, &r, p)
 	r.Card.Settings = [][2]string{{"Format", x.Format}, {"Texture", fmt.Sprint(body["texture_size"])}, {"Packaging", fmt.Sprint(body["texture_packaging"])}}
 	summary := fmt.Sprintf("export %s of %s %q, %v px textures, animation %t", x.Format, p.ID, name, body["texture_size"], x.WithAnimation)
 	if x.DryRun {
@@ -240,7 +240,7 @@ func exportModel(ctx context.Context, a *app, x exportArgs) (reply, error) {
 		}
 	}
 	if strings.EqualFold(filepath.Ext(final), ".glb") {
-		r.meta("model", map[string]any{"url": a.preview.local(final), "name": filepath.Base(final)})
+		r.meta("model", a.previewModel(ctx, final, "", filepath.Base(final)))
 	}
 	return r, nil
 }

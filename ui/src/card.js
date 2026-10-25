@@ -1,6 +1,6 @@
 // Tripo Studio result card (an MCP App). Everything it shows arrives in the
 // tool result: structuredContent is the card, _meta.tripo holds thumbnails,
-// cover and image URLs, and a 127.0.0.1 model URL. It never calls server
+// cover and image URLs, and the model itself as base64. It never calls server
 // tools, so it works in hosts that do not proxy them (Claude Code).
 import { App, applyHostFonts } from "@modelcontextprotocol/ext-apps/app-with-deps";
 import { Viewer } from "./viewer.js";
@@ -146,7 +146,8 @@ function mountViewer(el, model, center) {
     el.classList.add("ready");
     controls(el, v);
   };
-  if (viewer && viewerURL === model.url) {
+  const key = `${model.name}:${model.data?.length}`;
+  if (viewer && viewerURL === key) {
     // Re-render: move the live canvas into the new stage.
     viewer.stage = el;
     el.prepend(viewer.renderer.domElement);
@@ -154,9 +155,9 @@ function mountViewer(el, model, center) {
     ready(viewer);
     return;
   }
-  viewerURL = model.url;
+  viewerURL = key;
   const v = (viewer = new Viewer(el));
-  v.load(model.url).then(
+  v.load(model).then(
     () => {
       ready(v);
       app.sendLog?.({ level: "info", data: "3D preview loaded" }).catch(() => {});
@@ -219,6 +220,12 @@ function inputsBlock(labels, thumbs) {
     h("div", { class: "thumbs" }, ...labels.map((l, i) => h("div", { class: "thumb" }, thumbs?.[i] ? h("img", { src: thumbs[i], alt: l }) : null, h("span", {}, l)))));
 }
 
+function viewsBlock(labels, thumbs) {
+  return h("div", { class: "views" }, ...labels.map((l, i) =>
+    h("button", { class: "view", onclick: () => thumbs?.[i] && lightbox(thumbs[i]) },
+      thumbs?.[i] ? h("img", { src: thumbs[i], alt: l }) : null, h("span", { class: "badge" }, l))));
+}
+
 function settingsBlock(rows) {
   if (!rows?.length) return null;
   return h("div", { class: "kvs" }, ...rows.map(([k, v]) => h("div", { class: "kv" }, h("small", {}, k), h("b", { title: v }, v))));
@@ -268,17 +275,22 @@ function footer(left) {
 
 // ---- views ----
 function jobView(d, meta, isError) {
-  const subtitle = [d.project?.name !== d.title ? d.project?.name : null, d.settings?.find((s) => s[0] === "Visibility")?.[1]].filter(Boolean).join(" · ");
+  const subtitle = [
+    d.project?.name !== d.title ? d.project?.name : null,
+    d.settings?.find((s) => s[0] === "Visibility")?.[1] || d.project?.visibility,
+  ].filter(Boolean).join(" · ");
   const running = d.status === "submitted" || d.status === "running";
   const progress = running ? d.progress || 0 : null;
+  // Before there is a model, the input views are the picture.
+  const viewsOnly = !meta.model && !meta.cover && !running && d.inputs?.length;
   return [
     header(d.title, subtitle, isError && !d.status ? "failed" : d.status, costBlock(d.cost, d.status)),
     alertBlock(d.error),
     d.status === "quote" ? h("div", { class: "note" }, "Nothing was uploaded or charged. Approve to run it.") : null,
-    stage({ model: meta.model, cover: meta.cover, thumbs: meta.thumbs, progress,
+    viewsOnly ? viewsBlock(d.inputs, meta.thumbs) : stage({ model: meta.model, cover: meta.cover, thumbs: meta.thumbs, progress,
       pending: running ? ["Tripo is working on it", "Ask Claude to wait for the job, or pass download_to next time."] : null }),
     h("div", { "data-parts": "" }),
-    inputsBlock(d.inputs, meta.thumbs),
+    viewsOnly ? null : inputsBlock(d.inputs, meta.thumbs),
     settingsBlock(d.settings),
     flagsBlock(d.project),
     factsBlock(d),
@@ -297,7 +309,7 @@ function galleryView(d, meta) {
         h("div", { class: "pic" },
           covers[p.id] ? h("img", { src: covers[p.id], alt: "", loading: "lazy" }) : null,
           p.running ? h("span", { class: "badge live" }, "running") : p.visibility === "public" ? h("span", { class: "badge public" }, "public") : null),
-        h("div", { class: "meta" }, h("div", { class: "name" }, p.name || p.id), h("div", { class: "tags" }, p.type, p.visibility))))),
+        h("div", { class: "meta" }, h("div", { class: "name" }, p.name || p.id), h("div", { class: "tags" }, h("span", {}, p.type), h("span", {}, p.visibility)))))),
     actionsBlock(d),
     footer("Click a model to open it in the chat"),
   ];
@@ -354,6 +366,7 @@ function render() {
     const meta = r._meta?.tripo || {};
     const text = (r.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
     if (!d) view = [header("Tripo Studio", "", r.isError ? "failed" : ""), r.isError ? alertBlock(text) : h("div", { class: "note" }, text), footer()];
+    else if (d.kind === "error") view = [header(PENDING[d.title]?.[0].replace(/^Loading /, "") || "Tripo Studio", d.title, "failed"), alertBlock(d.error), footer()];
     else if (d.kind === "projects") view = galleryView(d, meta);
     else if (d.kind === "images") view = imagesView(d, meta);
     else view = jobView(d, meta, r.isError);

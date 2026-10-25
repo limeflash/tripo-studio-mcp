@@ -511,7 +511,11 @@ func decodeIndexSequence(dst []byte, count, stride int, src []byte) error {
 
 // decodeMeshoptGLB returns glb with every EXT_meshopt_compression bufferView
 // decoded into one plain BIN chunk. Files without the extension come back as is.
-func decodeMeshoptGLB(glb []byte) ([]byte, error) {
+func decodeMeshoptGLB(glb []byte) ([]byte, error) { return rewriteGLB(glb, 0) }
+
+// rewriteGLB decodes meshopt like decodeMeshoptGLB and, when maxTexture > 0,
+// also shrinks embedded images to at most maxTexture px for a light preview.
+func rewriteGLB(glb []byte, maxTexture int) ([]byte, error) {
 	le := binary.LittleEndian
 	if len(glb) < 20 || le.Uint32(glb) != 0x46546C67 || le.Uint32(glb[4:]) != 2 {
 		return nil, errors.New("not a GLB v2 file")
@@ -520,7 +524,7 @@ func decodeMeshoptGLB(glb []byte) ([]byte, error) {
 	if le.Uint32(glb[16:]) != 0x4E4F534A || 20+jsonLen > len(glb) {
 		return nil, errors.New("the GLB has no JSON chunk")
 	}
-	if !bytes.Contains(glb[20:20+jsonLen], []byte("EXT_meshopt_compression")) {
+	if maxTexture == 0 && !bytes.Contains(glb[20:20+jsonLen], []byte("EXT_meshopt_compression")) {
 		return glb, nil
 	}
 	var bin []byte
@@ -548,6 +552,17 @@ func decodeMeshoptGLB(glb []byte) ([]byte, error) {
 			return nil, errors.New("a bufferView points outside the GLB's BIN chunk")
 		}
 		return bin[off : off+n], nil
+	}
+	images := map[int]map[string]any{} // bufferView -> image
+	if maxTexture > 0 {
+		list, _ := doc["images"].([]any)
+		for _, im := range list {
+			if m, ok := im.(map[string]any); ok {
+				if _, has := m["bufferView"]; has {
+					images[num(m, "bufferView")] = m
+				}
+			}
+		}
 	}
 	var out bytes.Buffer
 	for i, v := range views {
@@ -581,6 +596,11 @@ func decodeMeshoptGLB(glb []byte) ([]byte, error) {
 			}
 		} else if data, err = slice(num(bv, "buffer"), num(bv, "byteOffset"), num(bv, "byteLength")); err != nil {
 			return nil, fmt.Errorf("bufferView %d: %w", i, err)
+		}
+		if im, ok := images[i]; ok {
+			if small, mime := shrinkImage(data, maxTexture); small != nil {
+				data, im["mimeType"] = small, mime
+			}
 		}
 		for out.Len()%4 != 0 {
 			out.WriteByte(0)

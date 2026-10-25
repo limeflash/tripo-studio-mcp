@@ -1,5 +1,5 @@
-// 3D preview for the card: loads a GLB (or FBX) from the server's local
-// preview URL, frames it, and offers textured / clay / parts views. No
+// 3D preview for the card: loads a GLB (or FBX) that arrives inline in the
+// tool result, frames it, and offers textured / clay / parts views. No
 // WebAssembly: the server decodes meshopt before it serves the model.
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -75,19 +75,17 @@ export class Viewer {
     this.camera.updateProjectionMatrix();
   }
 
-  async load(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-    const buf = await res.arrayBuffer();
-    const magic = new TextDecoder().decode(new Uint8Array(buf, 0, 4));
+  // model: { data: base64, format: "glb" | "fbx" } straight from the tool result.
+  async load(model) {
+    if (model.error) throw new Error(model.error);
+    const bin = atob(model.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const buf = bytes.buffer;
     let root;
-    if (magic === "glTF") {
-      root = (await new GLTFLoader().parseAsync(buf, "")).scene;
-    } else if (res.headers.get("X-Model-Format") === "fbx") {
-      root = new FBXLoader().parse(buf, "");
-    } else {
-      throw new Error("not a GLB or FBX model");
-    }
+    if (model.format === "glb") root = (await new GLTFLoader().parseAsync(buf, "")).scene;
+    else if (model.format === "fbx") root = new FBXLoader().parse(buf, "");
+    else throw new Error("not a GLB or FBX model");
     this.setModel(root);
   }
 

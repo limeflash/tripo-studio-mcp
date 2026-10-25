@@ -64,8 +64,6 @@ type app struct {
 	dir string
 	api *http.Client // Studio API: never follows redirects
 	dl  *http.Client // signed artifact URLs and S3
-
-	preview *previewServer
 }
 
 func newApp() (*app, error) {

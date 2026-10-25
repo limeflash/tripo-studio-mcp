@@ -462,7 +462,7 @@ func applyUV(ctx context.Context, a *app, x uvApplyArgs) (reply, error) {
 	r.line("Applied: candidate %s is now the current version of %s (was %s). No credits.", rc.CurrentOp, x.ProjectID, rc.Previous)
 	a.logJob(jobRecord{Tool: "tripo_apply_uv", Title: "Apply Smart UV", ProjectID: x.ProjectID, OperatorID: rc.CurrentOp, Status: "done"})
 	if np, err := a.project(ctx, x.ProjectID, ""); err == nil {
-		a.showProject(&r, np)
+		a.showProject(ctx, &r, np)
 	}
 	return r, nil
 }

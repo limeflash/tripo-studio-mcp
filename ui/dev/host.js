@@ -22,7 +22,9 @@ async function run(name, args, { pendingOnly = false } = {}) {
   ].join("; ");
   const html = (await (await fetch("/card.html")).text()).replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="${policy}">`);
   const frame = document.createElement("iframe");
-  frame.sandbox = "allow-scripts";
+  // ?same=1 renders the card in-process so screenshots can capture it; the
+  // default opaque-origin sandbox is what real hosts do.
+  frame.sandbox = new URLSearchParams(location.search).get("same") ? "allow-scripts allow-same-origin" : "allow-scripts";
   frame.style.width = width + "px";
   $("#stage").replaceChildren(frame);
   const bridge = new AppBridge(

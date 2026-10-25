@@ -55,11 +55,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a.startPreview()
-	// The URI changes with the widget build and the preview port, so a host
-	// never reuses a cached copy whose CSP names an old port.
-	port := a.preview.origin[strings.LastIndex(a.preview.origin, ":")+1:]
-	s := &server{app: a, cardURI: fmt.Sprintf("ui://tripo-studio/card-%s-%s.html", sha256Hex([]byte(cardHTML))[:10], port)}
+	// The URI changes with each widget build, so a host never keeps a stale copy.
+	s := &server{app: a, cardURI: fmt.Sprintf("ui://tripo-studio/card-%s.html", sha256Hex([]byte(cardHTML))[:10])}
 	in := bufio.NewReader(os.Stdin)
 	for {
 		line, err := in.ReadBytes('\n')
@@ -135,17 +132,13 @@ func (s *server) handle(m message) {
 	}
 }
 
-// cardMeta is the widget's sandbox policy: models come from the local preview
-// server, covers from Tripo's CDN, thumbnails inline.
+// cardMeta is the widget's sandbox policy: models and thumbnails arrive
+// inline in the tool result, covers and generated images from Tripo's CDN.
 func (s *server) cardMeta() map[string]any {
-	connect := []string{"data:", "blob:"}
-	if o := s.app.preview.origin; o != "" {
-		connect = append(connect, o)
-	}
 	return map[string]any{"ui": map[string]any{
 		"prefersBorder": true,
 		"csp": map[string]any{
-			"connectDomains":  connect,
+			"connectDomains":  []string{"data:", "blob:"},
 			"resourceDomains": []string{"https://*.tripo3d.com", "https://*.tripo3d.ai", "data:", "blob:"},
 		},
 	}}
