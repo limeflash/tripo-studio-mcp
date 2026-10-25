@@ -32,11 +32,11 @@ func TestCosts(t *testing.T) {
 	cost := func(keys []string) int { n, _ := prices.cost(keys); return n }
 
 	gen := func(g genArgs, multiview bool) int {
-		_, keys, _, err := g.settings(multiview)
+		p, err := g.plan(multiview)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return cost(keys)
+		return cost(p.keys)
 	}
 	cases := []struct {
 		name string
@@ -65,7 +65,7 @@ func TestCosts(t *testing.T) {
 		{Tier: "high_detail", FaceLimit: 19500, PBR: true},
 		{FaceLimit: 19500},
 	} {
-		if _, _, _, err := bad.settings(true); err == nil {
+		if _, err := bad.plan(true); err == nil {
 			t.Errorf("accepted %+v", bad)
 		}
 	}

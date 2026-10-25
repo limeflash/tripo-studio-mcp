@@ -64,6 +64,8 @@ type app struct {
 	dir string
 	api *http.Client // Studio API: never follows redirects
 	dl  *http.Client // signed artifact URLs and S3
+
+	preview *previewServer
 }
 
 func newApp() (*app, error) {
@@ -851,8 +853,9 @@ func (a *app) exportURL(ctx context.Context, p *project, format string, textureS
 var defaultPrices []byte
 
 type priceTable struct {
-	Updated string         `json:"updated"`
-	Credits map[string]int `json:"credits"`
+	Updated   string             `json:"updated"`
+	Credits   map[string]int     `json:"credits"`
+	Discounts map[string]float64 `json:"discounts"` // image generation, by membership type
 }
 
 // prices reads the built-in table, overlaid by <data dir>/prices.json when
@@ -877,6 +880,9 @@ func (a *app) prices() (priceTable, error) {
 	for k, v := range o.Credits {
 		t.Credits[k] = v
 	}
+	for k, v := range o.Discounts {
+		t.Discounts[k] = v
+	}
 	if o.Updated != "" {
 		t.Updated = o.Updated
 	}
@@ -895,4 +901,17 @@ func (t priceTable) cost(keys []string) (int, string) {
 		parts = append(parts, fmt.Sprintf("%s %d", k, v))
 	}
 	return total, strings.Join(parts, " + ")
+}
+
+// member returns the account's membership type (e.g. "premium"), or "".
+func (a *app) member(ctx context.Context) string {
+	var pay struct {
+		Member struct {
+			Type string `json:"type"`
+		} `json:"member"`
+	}
+	if a.call(ctx, "GET", "/v2/studio/user/profile/payment", nil, &pay) != nil {
+		return ""
+	}
+	return pay.Member.Type
 }

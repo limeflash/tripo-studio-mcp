@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,28 +17,36 @@ import (
 	"time"
 )
 
+// tool is one MCP tool. Each ops_*.go file registers its own tools in init().
 type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-	run         func(context.Context, *app, json.RawMessage) (string, error)
+	Name        string
+	Description string
+	InputSchema map[string]any
+	UI          bool // results render in the card widget
+	run         func(context.Context, *app, json.RawMessage) (reply, error)
 }
+
+var tools []tool
+
+func register(ts ...tool) { tools = append(tools, ts...) }
 
 // handler decodes the arguments strictly, so a misspelt option is an error
 // instead of a silently ignored setting on a paid call.
-func handler[T any](f func(context.Context, *app, T) (string, error)) func(context.Context, *app, json.RawMessage) (string, error) {
-	return func(ctx context.Context, a *app, raw json.RawMessage) (string, error) {
+func handler[T any](f func(context.Context, *app, T) (reply, error)) func(context.Context, *app, json.RawMessage) (reply, error) {
+	return func(ctx context.Context, a *app, raw json.RawMessage) (reply, error) {
 		var args T
 		if len(raw) > 0 && string(raw) != "null" {
 			d := json.NewDecoder(bytes.NewReader(raw))
 			d.DisallowUnknownFields()
 			if err := d.Decode(&args); err != nil {
-				return "", fmt.Errorf("bad arguments: %v", err)
+				return reply{}, fmt.Errorf("bad arguments: %v", err)
 			}
 		}
 		return f(ctx, a, args)
 	}
 }
+
+// ---- schema helpers ----
 
 type props = map[string]any
 
@@ -58,6 +66,7 @@ func object(required []string, ps ...props) map[string]any {
 
 func str(desc string) any     { return props{"type": "string", "description": desc} }
 func integer(desc string) any { return props{"type": "integer", "description": desc} }
+func number(desc string) any  { return props{"type": "number", "description": desc} }
 func boolean(desc string) any { return props{"type": "boolean", "description": desc} }
 func strList(desc string) any {
 	return props{"type": "array", "items": props{"type": "string"}, "description": desc}
@@ -81,128 +90,88 @@ var followProps = props{
 	"wait_seconds": integer("How long download_to waits (default 900, max 3600)."),
 }
 
-var tools = []tool{
-	{
-		Name:        "tripo_auth_import",
-		Description: "Sign in: import the Tripo Studio web session cookie (ory_kratos_session). Pass exactly one of cookie_file (a text file with the value or a whole Cookie header; keeps it out of the chat), cookie (the value), or from_plugin=true (reuse the session saved by tripo-studio-plugin). The cookie is checked against Tripo, saved to %LOCALAPPDATA%\\TripoStudioMCP\\session.json and never shown. Free.",
-		InputSchema: object(nil, props{
-			"cookie_file": str("Path to a text file holding the cookie."),
-			"cookie":      str("The ory_kratos_session value."),
-			"from_plugin": boolean("Reuse %LOCALAPPDATA%\\TripoStudioPlugin\\session.json."),
-		}),
-		run: handler(authImport),
-	},
-	{
-		Name:        "tripo_auth_status",
-		Description: "Show the stored Studio session (source, expiry) and check it live against Tripo. Free.",
-		InputSchema: object(nil),
-		run:         handler(authStatus),
-	},
-	{
-		Name:        "tripo_balance",
-		Description: "Studio credit balance, plan and free quotas. Free.",
-		InputSchema: object(nil),
-		run:         handler(balance),
-	},
-	{
-		Name:        "tripo_upload_image",
-		Description: "Upload one local image to Tripo storage and run Tripo's content check; returns its bucket/key. Free. Paid tools upload their own inputs, so this is only for testing an image.",
-		InputSchema: object([]string{"path"}, props{"path": str("Image path (PNG/JPEG/WebP, up to 20 MB).")}),
-		run:         handler(uploadImage),
-	},
-	{
-		Name: "tripo_generate_model",
-		Description: "PAID: generate a 3D model from one image or from multiview (front plus at least one of left/back/right). Submits at once and returns the cost, project_id and operator_id.\n" +
-			"Versions: P1 = Smart Mesh P1.0 (default for tier smart_mesh; 35 credits; 500-20,000 faces; triangles only). P2 = Smart Mesh P2.0 (100 credits; up to 25,000 faces; quad allowed). H3.1 = High Detail 3.1 (default for tier high_detail; 15 base, 25 with texture; +15 detailed geometry, +10/+20 4K/8K texture, +5 PBR, +5 quad).\n" +
-			"Smart Mesh returns an untextured mesh: texture it with tripo_texture on the returned project_id. Defaults are the cheapest options: triangles, private, standard quality.",
-		InputSchema: object([]string{"face_limit"}, viewProps, followProps, props{
-			"tier":              enum("smart_mesh or high_detail; may be left out when model_version is given.", "smart_mesh", "high_detail"),
-			"model_version":     str("P1, P2, H3.1, H3.0, H2.5, or a full Studio version id."),
-			"face_limit":        integer("Target face count."),
-			"quad":              boolean("Quad topology (P2 and High Detail only). Default false."),
-			"symmetry":          boolean("P2 only: force symmetry on/off; by default Studio's symmetry check decides."),
-			"visibility":        enum("Default private.", "private", "public", "shareable"),
-			"texture":           boolean("High Detail only: texture during generation. Default false."),
-			"texture_quality":   enum("High Detail with texture: standard 2K (default), detailed 4K, ultra 8K.", "standard", "detailed", "ultra"),
-			"pbr":               boolean("High Detail with texture: PBR maps. Default false."),
-			"delight":           boolean("High Detail with texture: remove baked lighting. Default true."),
-			"texture_alignment": enum("High Detail with texture. Default original_image.", "original_image", "geometry"),
-			"geometry_quality":  enum("H3.1 only. Default standard.", "standard", "detailed"),
-			"smart_poly":        boolean("High Detail only: low-poly Smart Poly mode. Default false."),
-		}),
-		run: handler(generateModel),
-	},
-	{
-		Name:        "tripo_texture",
-		Description: "PAID: texture an existing project, keeping its geometry. Images as in tripo_generate_model (image_path, or multiview). quality standard = 2K, 10 credits (default); detailed = 4K, 20; ultra = 8K, 30. Submits at once.",
-		InputSchema: object([]string{"project_id"}, viewProps, followProps, props{
-			"project_id": str("Project to texture."),
-			"quality":    enum("Default standard.", "standard", "detailed", "ultra"),
-			"delight":    boolean("Remove baked lighting from the result. Default true."),
-			"alignment":  enum("Default original_image.", "original_image", "geometry"),
-			"part_names": strList("Texture only these parts (raw mesh names); default the whole model."),
-		}),
-		run: handler(texture),
-	},
-	{
-		Name:        "tripo_remesh",
-		Description: "PAID: retopologize an existing project to face_limit. smart_poly=true is the website's Retopology: 35 credits for triangles (up to 20,000), 40 for quads (up to 10,000); not available for Smart Mesh projects. smart_poly=false is a plain remesh: 5 credits triangles (up to 150,000), 10 quads (up to 50,000). Submits at once.",
-		InputSchema: object([]string{"project_id", "face_limit"}, followProps, props{
-			"project_id": str("Project to remesh."),
-			"face_limit": integer("Target face count (500 or more)."),
-			"quad":       boolean("Quad topology. Default false."),
-			"smart_poly": boolean("Smart Poly retopology. Default false."),
-			"part_names": strList("Raw mesh names to remesh; default every mesh in the model."),
-		}),
-		run: handler(remesh),
-	},
-	{
-		Name:        "tripo_segment",
-		Description: "PAID, 40 credits: split a project into semantic parts. Not for quad or rigged models. Submits at once.",
-		InputSchema: object([]string{"project_id"}, followProps, props{
-			"project_id":  str("Project to segment."),
-			"granularity": enum("Default balanced.", "coarse", "balanced", "fine"),
-		}),
-		run: handler(segment),
-	},
-	{
-		Name:        "tripo_wait",
-		Description: "Check or wait for a job by operator_id. timeout_seconds 0 checks once; default 600. When the job is done it shows the project's state, and download_to saves the model. Free.",
-		InputSchema: object([]string{"operator_id"}, props{
-			"operator_id":     str("operator_id returned by a paid tool."),
-			"project_id":      str("The job's project (paid tools print it); needed to show or download the result."),
-			"timeout_seconds": integer("0 to 3600; default 600."),
-			"download_to":     str("Save the model to this file or folder when done."),
-		}),
-		run: handler(waitJob),
-	},
-	{
-		Name:        "tripo_download",
-		Description: "Save a project's model to a file or folder. By default it is the file Studio stores (GLB for triangle meshes; quad Smart Mesh results are FBX and the extension is fixed to match). operator_id picks an earlier version. format glb/fbx/obj runs Studio's export of the current version (texture_size 512-8192; may come as a zip). The stored file is free; the export was free for own projects in the original plugin's tests but is not verified here.",
-		InputSchema: object([]string{"project_id", "path"}, props{
-			"project_id":   str("Project to save."),
-			"path":         str("Output file, or a folder (then <project name>.glb)."),
-			"operator_id":  str("A specific version (from a job); default the current one."),
-			"format":       enum("Export instead of the stored file.", "glb", "fbx", "obj"),
-			"texture_size": integer("Export texture size: 512, 1024, 2048, 4096 or 8192. Default the project's own."),
-		}),
-		run: handler(download),
-	},
-	{
-		Name:        "tripo_list_projects",
-		Description: "List your Studio projects, newest first, 20 per page. Free.",
-		InputSchema: object(nil, props{
-			"offset": integer("Skip this many projects. Default 0."),
-			"filter": enum("Default all.", "all", "smart_mesh", "textured", "untextured", "rigged"),
-		}),
-		run: handler(listProjects),
-	},
-	{
-		Name:        "tripo_project",
-		Description: "Show a project's state: name, current version, and whether it is textured, PBR, quad, Smart Mesh, segmented, rigged. Free.",
-		InputSchema: object([]string{"project_id"}, props{"project_id": str("Project id.")}),
-		run:         handler(projectInfo),
-	},
+func init() {
+	register(
+		tool{
+			Name:        "tripo_auth_import",
+			Description: "Sign in: import the Tripo Studio web session cookie (ory_kratos_session). Pass exactly one of cookie_file (a text file with the value or a whole Cookie header; keeps it out of the chat), cookie (the value), or from_plugin=true (reuse the session saved by tripo-studio-plugin). The cookie is checked against Tripo, saved to %LOCALAPPDATA%\\TripoStudioMCP\\session.json and never shown. Free.",
+			InputSchema: object(nil, props{
+				"cookie_file": str("Path to a text file holding the cookie."),
+				"cookie":      str("The ory_kratos_session value."),
+				"from_plugin": boolean("Reuse %LOCALAPPDATA%\\TripoStudioPlugin\\session.json."),
+			}),
+			run: handler(authImport),
+		},
+		tool{
+			Name:        "tripo_auth_status",
+			Description: "Show the stored Studio session (source, expiry) and check it live against Tripo. Free.",
+			InputSchema: object(nil),
+			run:         handler(authStatus),
+		},
+		tool{
+			Name:        "tripo_auth_logout",
+			Description: "Forget the stored Studio session (deletes session.json). Free.",
+			InputSchema: object(nil),
+			run:         handler(authLogout),
+		},
+		tool{
+			Name:        "tripo_balance",
+			Description: "Studio credit balance, plan and free quotas. Free.",
+			InputSchema: object(nil),
+			run:         handler(balance),
+		},
+		tool{
+			Name:        "tripo_upload_image",
+			Description: "Upload one local image to Tripo storage and run Tripo's content check; returns its bucket/key. Free. Paid tools upload their own inputs, so this is only for testing an image.",
+			InputSchema: object([]string{"path"}, props{"path": str("Image path (PNG/JPEG/WebP, up to 20 MB).")}),
+			run:         handler(uploadImage),
+		},
+		tool{
+			Name:        "tripo_wait",
+			Description: "Check or wait for a job by operator_id. timeout_seconds 0 checks once; default 600. When the job is done it shows the project's state, and download_to saves the model. Free.",
+			InputSchema: object([]string{"operator_id"}, props{
+				"operator_id":     str("operator_id returned by a paid tool."),
+				"project_id":      str("The job's project (paid tools print it); needed to show or download the result."),
+				"timeout_seconds": integer("0 to 3600; default 600."),
+				"download_to":     str("Save the model to this file or folder when done."),
+			}),
+			UI:  true,
+			run: handler(waitJob),
+		},
+		tool{
+			Name:        "tripo_download",
+			Description: "Save a project's model to a file or folder. By default it is the file Studio stores (GLB for triangle meshes; quad Smart Mesh results are FBX and the extension is fixed to match). operator_id picks an earlier version. format glb/fbx/obj runs Studio's export of the current version (texture_size 512-8192; may come as a zip). The stored file is free; the export was free for own projects in the original plugin's tests but is not verified here.",
+			InputSchema: object([]string{"project_id", "path"}, props{
+				"project_id":   str("Project to save."),
+				"path":         str("Output file, or a folder (then <project name>.glb)."),
+				"operator_id":  str("A specific version (from a job); default the current one."),
+				"format":       enum("Export instead of the stored file.", "glb", "fbx", "obj"),
+				"texture_size": integer("Export texture size: 512, 1024, 2048, 4096 or 8192. Default the project's own."),
+			}),
+			UI:  true,
+			run: handler(download),
+		},
+		tool{
+			Name:        "tripo_list_projects",
+			Description: "List your Studio projects with cover images, newest first, 20 per page. Free.",
+			InputSchema: object(nil, props{
+				"offset": integer("Skip this many projects. Default 0."),
+				"filter": enum("Default all.", "all", "smart_mesh", "textured", "untextured", "rigged"),
+			}),
+			UI:  true,
+			run: handler(listProjects),
+		},
+		tool{
+			Name:        "tripo_project",
+			Description: "Show a project with a 3D preview: name, current version, and whether it is textured, PBR, quad, Smart Mesh, segmented, rigged. Free.",
+			InputSchema: object([]string{"project_id"}, props{
+				"project_id":  str("Project id."),
+				"operator_id": str("A specific version; default the current one."),
+			}),
+			UI:  true,
+			run: handler(projectInfo),
+		},
+	)
 }
 
 type noArgs struct{}
@@ -215,35 +184,43 @@ type authImportArgs struct {
 	FromPlugin bool   `json:"from_plugin"`
 }
 
-func authImport(ctx context.Context, a *app, x authImportArgs) (string, error) {
+func authImport(ctx context.Context, a *app, x authImportArgs) (reply, error) {
 	if err := a.importSession(ctx, x.Cookie, x.CookieFile, x.FromPlugin); err != nil {
-		return "", err
+		return reply{}, err
 	}
-	text, err := authStatus(ctx, a, noArgs{})
-	return "Imported.\n" + text, err
+	r, err := authStatus(ctx, a, noArgs{})
+	r.Text = "Imported.\n" + r.Text
+	return r, err
 }
 
-func authStatus(ctx context.Context, a *app, _ noArgs) (string, error) {
+func authStatus(ctx context.Context, a *app, _ noArgs) (reply, error) {
 	s, err := a.loadSession()
 	if err != nil {
-		return "", err
+		return reply{}, err
 	}
-	var b strings.Builder
+	var r reply
 	imported := s.ImportedAt
 	if t, err := time.Parse(time.RFC3339, s.ImportedAt); err == nil {
 		imported = t.Local().Format("2006-01-02 15:04")
 	}
-	fmt.Fprintf(&b, "Session: %s, imported %s.\n", s.Source, imported)
+	r.line("Session: %s, imported %s.", s.Source, imported)
 	if t, err := time.Parse(time.RFC3339, s.ExpiresAt); err == nil {
-		fmt.Fprintf(&b, "Expires: %s (in %d days).\n", t.Local().Format("2006-01-02 15:04"), int(time.Until(t).Hours()/24))
+		r.line("Expires: %s (in %d days).", t.Local().Format("2006-01-02 15:04"), int(time.Until(t).Hours()/24))
 	} else {
-		b.WriteString("Expires: unknown.\n")
+		r.line("Expires: unknown.")
 	}
 	if err := a.callAs(ctx, s, "GET", "/v2/studio/user/profile/payment", nil, nil); err != nil {
-		return b.String(), fmt.Errorf("live check failed: %w", err)
+		return r, fmt.Errorf("live check failed: %w", err)
 	}
-	b.WriteString("Live check: Tripo accepts the session.")
-	return b.String(), nil
+	r.line("Live check: Tripo accepts the session.")
+	return r, nil
+}
+
+func authLogout(_ context.Context, a *app, _ noArgs) (reply, error) {
+	if err := os.Remove(a.sessionPath()); err != nil && !os.IsNotExist(err) {
+		return reply{}, err
+	}
+	return say("Signed out: the stored session was deleted."), nil
 }
 
 var (
@@ -307,10 +284,10 @@ func flatten(b *strings.Builder, prefix string, v any) {
 	}
 }
 
-func balance(ctx context.Context, a *app, _ noArgs) (string, error) {
+func balance(ctx context.Context, a *app, _ noArgs) (reply, error) {
 	var pay map[string]any
 	if err := a.call(ctx, "GET", "/v2/studio/user/profile/payment", nil, &pay); err != nil {
-		return "", err
+		return reply{}, err
 	}
 	var b strings.Builder
 	wallet, _ := pay["wallet"].(map[string]any)
@@ -333,7 +310,7 @@ func balance(ctx context.Context, a *app, _ noArgs) (string, error) {
 			b.WriteString("Free uses left: " + strings.Join(free, ", ") + ".")
 		}
 	}
-	return strings.TrimSpace(b.String()), nil
+	return say(strings.TrimSpace(b.String())), nil
 }
 
 // quotas collects "name left/total" for every {remaining, total_count} entry.
@@ -364,16 +341,16 @@ type uploadArgs struct {
 	Path string `json:"path"`
 }
 
-func uploadImage(ctx context.Context, a *app, x uploadArgs) (string, error) {
+func uploadImage(ctx context.Context, a *app, x uploadArgs) (reply, error) {
 	img, err := readImage(x.Path)
 	if err != nil {
-		return "", err
+		return reply{}, err
 	}
 	ref, err := a.upload(ctx, img)
 	if err != nil {
-		return "", err
+		return reply{}, err
 	}
-	return fmt.Sprintf("Uploaded %s (%s, %s).\nbucket: %s\nkey: %s\ncontent check: %s", img.path, img.format, size(int64(len(img.data))), ref.Bucket, ref.Key, ref.Audit), nil
+	return say(fmt.Sprintf("Uploaded %s (%s, %s).\nbucket: %s\nkey: %s\ncontent check: %s", img.path, img.format, size(int64(len(img.data))), ref.Bucket, ref.Key, ref.Audit)), nil
 }
 
 // ---- inputs ----
@@ -469,15 +446,30 @@ func readImages(paths []string) ([]*localImage, error) {
 	return imgs, nil
 }
 
-func describeInputs(imgs []*localImage, multiview bool) string {
-	if !multiview {
-		return filepath.Base(imgs[0].path)
+// inputs labels the images for the card: the view names for multiview,
+// "image" for a single reference.
+func inputs(imgs []*localImage, multiview bool) []input {
+	var out []input
+	for i, img := range imgs {
+		if img == nil {
+			continue
+		}
+		label := "image"
+		if multiview {
+			label = viewNames[i]
+		}
+		out = append(out, input{label, img})
+	}
+	return out
+}
+
+func describeInputs(in []input) string {
+	if len(in) == 1 && in[0].label == "image" {
+		return filepath.Base(in[0].img.path)
 	}
 	var parts []string
-	for i, img := range imgs {
-		if img != nil {
-			parts = append(parts, viewNames[i]+" "+filepath.Base(img.path))
-		}
+	for _, i := range in {
+		parts = append(parts, i.label+" "+filepath.Base(i.img.path))
 	}
 	return "multiview (" + strings.Join(parts, ", ") + ")"
 }
@@ -506,45 +498,90 @@ type followArgs struct {
 	WaitSeconds int    `json:"wait_seconds"`
 }
 
-// paid is the shared end of every paid tool: price, dry run, submit, report,
-// then optionally wait and download.
-func (a *app) paid(ctx context.Context, what string, keys []string, f followArgs, projectID string, send func() (receipt, error)) (string, error) {
+type input struct {
+	label string
+	img   *localImage
+}
+
+// job describes a paid operation for paid().
+type job struct {
+	Tool      string      // tool name, for the job log
+	Title     string      // card heading, e.g. "Smart Mesh P1.0"
+	Summary   string      // one line for Claude
+	Settings  [][2]string // shown on the card
+	Keys      []string    // Studio price keys, per request
+	Requests  int         // how many requests the call makes (batch, variants); 0 means 1
+	Discount  bool        // apply the membership discount (Studio does for image generation)
+	Inputs    []input
+	ProjectID string // the project a post-process changes
+	Follow    followArgs
+}
+
+// paid is the shared flow of every paid tool: price, dry run, submit, report,
+// log, then optionally wait and download.
+func (a *app) paid(ctx context.Context, j job, send func() (receipt, error)) (reply, error) {
+	r := reply{Card: &card{Kind: "job", Title: j.Title, Summary: j.Summary, Settings: j.Settings, ProjectID: j.ProjectID}}
+	if len(j.Inputs) > 0 {
+		var thumbs []string
+		for _, in := range j.Inputs {
+			r.Card.Inputs = append(r.Card.Inputs, in.label)
+			thumbs = append(thumbs, thumb(in.img))
+		}
+		r.meta("thumbs", thumbs)
+	}
 	t, err := a.prices()
 	if err != nil {
-		return "", err
+		return r, err
 	}
-	credits, breakdown := t.cost(keys)
+	credits, breakdown := t.cost(j.Keys)
+	if credits >= 0 && j.Requests > 1 {
+		credits *= j.Requests
+		breakdown = fmt.Sprintf("(%s) × %d", breakdown, j.Requests)
+	}
+	if credits >= 0 && j.Discount {
+		m := a.member(ctx)
+		if f, ok := t.Discounts[m]; ok && f != 1 {
+			credits = int(math.Ceil(float64(credits) * f))
+			breakdown += fmt.Sprintf(" × %g %s discount", f, m)
+		}
+	}
+	r.Card.Cost = &cardCost{Credits: credits, Breakdown: breakdown, Updated: t.Updated}
 	costLine := fmt.Sprintf("Cost: %s credits (%s; prices of %s).", thousands(credits), breakdown, t.Updated)
 	if credits < 0 {
 		costLine = "Cost: unknown, " + breakdown + "; add it to prices.json."
 	}
-	if f.DryRun {
-		text := what + "\n" + costLine
+	if j.Follow.DryRun {
+		r.Card.Status = "quote"
+		r.Text = j.Summary + "\n" + costLine
 		if n, ok := a.credits(ctx); ok {
-			text += " Balance: " + thousands(n) + "."
+			r.Card.Cost.Balance = &n
+			r.Text += " Balance: " + thousands(n) + "."
 		}
-		return text + "\nDry run: nothing uploaded, submitted or charged.", nil
+		r.line("Dry run: nothing uploaded, submitted or charged.")
+		return r, nil
 	}
-	r, err := send()
+	rc, err := send()
 	if err != nil {
-		return what + "\n" + costLine, err
+		r.Card.Status = "failed"
+		r.Text = j.Summary + "\n" + costLine
+		return r, err
 	}
-	if r.ProjectID == "" {
-		r.ProjectID = projectID
+	if rc.ProjectID == "" {
+		rc.ProjectID = j.ProjectID
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Submitted: %s\n%s", what, costLine)
+	r.Card.Status, r.Card.ProjectID, r.Card.OperatorID = "submitted", rc.ProjectID, rc.OperatorID
+	r.Text = "Submitted: " + j.Summary + "\n" + costLine
 	if n, ok := a.credits(ctx); ok {
-		fmt.Fprintf(&b, " Credits left: %s.", thousands(n))
+		r.Card.Cost.Balance = &n
+		r.Text += " Credits left: " + thousands(n) + "."
 	}
-	fmt.Fprintf(&b, "\nproject_id: %s\noperator_id: %s\n", r.ProjectID, r.OperatorID)
-	if f.DownloadTo == "" {
-		fmt.Fprintf(&b, "Next: tripo_wait operator_id=%s project_id=%s (add download_to to save the model).", r.OperatorID, r.ProjectID)
-		return b.String(), nil
+	r.line("project_id: %s\noperator_id: %s", rc.ProjectID, rc.OperatorID)
+	a.logJob(jobRecord{Tool: j.Tool, Title: j.Title, Summary: j.Summary, Credits: credits, ProjectID: rc.ProjectID, OperatorID: rc.OperatorID, Status: "submitted"})
+	if j.Follow.DownloadTo == "" {
+		r.line("Next: tripo_wait operator_id=%s project_id=%s (add download_to to save the model).", rc.OperatorID, rc.ProjectID)
+		return r, nil
 	}
-	text, err := a.finish(ctx, r.OperatorID, r.ProjectID, seconds(f.WaitSeconds, 900), f.DownloadTo)
-	b.WriteString(text)
-	return b.String(), err
+	return r, a.finish(ctx, &r, rc.OperatorID, rc.ProjectID, seconds(j.Follow.WaitSeconds, 900), j.Follow.DownloadTo)
 }
 
 func seconds(n, def int) time.Duration {
@@ -552,184 +589,6 @@ func seconds(n, def int) time.Duration {
 		n = def
 	}
 	return time.Duration(min(max(n, 0), 3600)) * time.Second
-}
-
-var versionAliases = map[string]string{"p1": nexusP1, "p2": nexusP2, "h3.1": highDetailH31, "h3.0": "v3.0-20250812", "h2.5": "v2.5-20250123"}
-
-var versionLabels = map[string]string{
-	nexusP1: "Smart Mesh P1.0", nexusP2: "Smart Mesh P2.0",
-	highDetailH31: "High Detail H3.1", "v3.0-20250812": "High Detail H3.0", "v2.5-20250123": "High Detail H2.5",
-}
-
-type genArgs struct {
-	viewArgs
-	Tier            string `json:"tier"`
-	ModelVersion    string `json:"model_version"`
-	FaceLimit       int    `json:"face_limit"`
-	Quad            bool   `json:"quad"`
-	Symmetry        *bool  `json:"symmetry"`
-	Visibility      string `json:"visibility"`
-	Texture         bool   `json:"texture"`
-	TextureQuality  string `json:"texture_quality"`
-	PBR             bool   `json:"pbr"`
-	Delight         *bool  `json:"delight"`
-	Alignment       string `json:"texture_alignment"`
-	GeometryQuality string `json:"geometry_quality"`
-	SmartPoly       bool   `json:"smart_poly"`
-	followArgs
-}
-
-// settings checks the options the way Studio allows them and returns the
-// request body without images, the price keys and a short description.
-func (g genArgs) settings(multiview bool) (map[string]any, []string, string, error) {
-	fail := func(format string, args ...any) (map[string]any, []string, string, error) {
-		return nil, nil, "", fmt.Errorf(format, args...)
-	}
-	version := g.ModelVersion
-	if v, ok := versionAliases[strings.ToLower(version)]; ok {
-		version = v
-	}
-	smart := strings.HasPrefix(version, "Nexus-")
-	switch g.Tier {
-	case "":
-		if version == "" {
-			return fail("pass tier (smart_mesh or high_detail) or model_version (P1, P2, H3.1)")
-		}
-	case "smart_mesh":
-		if version == "" {
-			version, smart = nexusP1, true
-		} else if !smart {
-			return fail("%s is not a Smart Mesh version", g.ModelVersion)
-		}
-	case "high_detail":
-		if version == "" {
-			version = highDetailH31
-		} else if smart {
-			return fail("%s is a Smart Mesh version, not High Detail", g.ModelVersion)
-		}
-	default:
-		return fail("tier must be smart_mesh or high_detail")
-	}
-	label, ok := versionLabels[version]
-	if !ok {
-		return fail("unknown model_version %q; use P1, P2, H3.1, H3.0 or H2.5", g.ModelVersion)
-	}
-	vis := g.Visibility
-	if vis == "" {
-		vis = "private"
-	}
-	if vis != "private" && vis != "public" && vis != "shareable" {
-		return fail("visibility must be private, public or shareable")
-	}
-	if g.FaceLimit == 0 {
-		return fail("face_limit is required")
-	}
-	body := map[string]any{"face_limit": g.FaceLimit, "quad": g.Quad, "visibility": vis, "model_version": version}
-	var keys []string
-	if smart {
-		limit := 25000
-		if version == nexusP1 {
-			limit = 20000
-		}
-		if g.FaceLimit < 500 || g.FaceLimit > limit {
-			return fail("%s face_limit must be 500 to %s", label, thousands(limit))
-		}
-		if version == nexusP1 && g.Quad {
-			return fail("quad topology needs Smart Mesh P2")
-		}
-		if g.Texture || g.TextureQuality != "" || g.PBR || g.Delight != nil || g.Alignment != "" || g.GeometryQuality != "" || g.SmartPoly {
-			return fail("Smart Mesh makes an untextured mesh: drop texture, texture_quality, pbr, delight, texture_alignment, geometry_quality and smart_poly, then texture the project with tripo_texture")
-		}
-		keys = []string{"GenerateBaseNexus"}
-		if version == nexusP2 {
-			keys = []string{"GenerateBaseNexusV2"}
-		}
-		if g.Symmetry != nil {
-			if version != nexusP2 {
-				return fail("symmetry is a Smart Mesh P2 option")
-			}
-			body["symmetry"] = *g.Symmetry
-		}
-	} else {
-		if g.Symmetry != nil {
-			return fail("symmetry is a Smart Mesh P2 option")
-		}
-		gq := g.GeometryQuality
-		if version == highDetailH31 {
-			if gq == "" {
-				gq = "standard"
-			}
-			if gq != "standard" && gq != "detailed" {
-				return fail("geometry_quality must be standard or detailed")
-			}
-			body["geometry_quality"] = gq
-			label += ", " + gq + " geometry"
-		} else if gq != "" {
-			return fail("geometry_quality is an H3.1 option")
-		}
-		if g.SmartPoly && gq == "detailed" {
-			return fail("smart_poly cannot be combined with detailed geometry_quality")
-		}
-		limit := 1000000
-		switch {
-		case g.SmartPoly && g.Quad:
-			limit = 10000
-		case g.SmartPoly:
-			limit = 20000
-		case g.Quad:
-			limit = 50000
-		case gq == "detailed":
-			limit = 2000000
-		}
-		if g.FaceLimit < 500 || g.FaceLimit > limit {
-			return fail("face_limit must be 500 to %s for these options", thousands(limit))
-		}
-		body["generate_parts"] = false
-		body["smart_poly"] = g.SmartPoly
-		body["texture"] = g.Texture
-		if !multiview {
-			body["enable_image_autofix"] = false
-		}
-		keys = []string{"GenerateBase"}
-		if g.Texture {
-			keys[0] = "GenerateWithTexture"
-		}
-		if g.Quad {
-			keys = append(keys, "GenerateQuad")
-		}
-		if g.SmartPoly {
-			keys = append(keys, "GenerateSmartPoly")
-			label += ", Smart Poly"
-		}
-		if gq == "detailed" {
-			keys = append(keys, "GenerateGeometryQualityDetailed")
-		}
-		if g.Texture {
-			wire, key, err := textureQuality(g.TextureQuality)
-			if err != nil {
-				return fail("%v", err)
-			}
-			align, err := alignment(g.Alignment)
-			if err != nil {
-				return fail("%v", err)
-			}
-			body["pbr"], body["delight"], body["texture_alignment"], body["texture_quality"] = g.PBR, g.Delight == nil || *g.Delight, align, wire
-			if key != "" {
-				keys = append(keys, "Generate"+key)
-			}
-			if g.PBR {
-				keys = append(keys, "PBR")
-			}
-			label += ", textured " + qualityLabel(wire)
-		} else if g.TextureQuality != "" || g.PBR || g.Delight != nil || g.Alignment != "" {
-			return fail("texture_quality, pbr, delight and texture_alignment need texture=true")
-		}
-	}
-	topo := "triangles"
-	if g.Quad {
-		topo = "quads"
-	}
-	return body, keys, fmt.Sprintf("%s, %s faces (%s), %s", label, thousands(g.FaceLimit), topo, vis), nil
 }
 
 // textureQuality maps a quality to Studio's wire value and its price key.
@@ -759,216 +618,6 @@ func alignment(v string) (string, error) {
 	return "", fmt.Errorf("alignment must be original_image or geometry, not %q", v)
 }
 
-func generateModel(ctx context.Context, a *app, g genArgs) (string, error) {
-	paths, multiview, err := g.paths()
-	if err != nil {
-		return "", err
-	}
-	body, keys, desc, err := g.settings(multiview)
-	if err != nil {
-		return "", err
-	}
-	imgs, err := readImages(paths)
-	if err != nil {
-		return "", err
-	}
-	what := desc + ", from " + describeInputs(imgs, multiview)
-	return a.paid(ctx, what, keys, g.followArgs, "", func() (receipt, error) {
-		refs, err := a.uploadAll(ctx, imgs)
-		if err != nil {
-			return receipt{}, err
-		}
-		endpoint := "/v2/studio/operation/multiview_to_model"
-		body["image"] = refs
-		if !multiview {
-			endpoint, body["image"] = "/v2/studio/operation/image_to_model", refs[0]
-		}
-		if body["model_version"] == nexusP2 && g.Symmetry == nil {
-			// The website asks Studio whether the first view is symmetric.
-			first := refs[0].(imageRef)
-			var sym struct {
-				Symmetry *bool `json:"symmetry"`
-			}
-			err := a.call(ctx, "POST", "/v2/studio/operation/symmetry_check", map[string]any{"image": map[string]string{"bucket": first.Bucket, "key": first.Key}}, &sym)
-			if err != nil || sym.Symmetry == nil {
-				return receipt{}, fmt.Errorf("not submitted, nothing charged: Studio's symmetry check failed (%v); pass symmetry explicitly", err)
-			}
-			body["symmetry"] = *sym.Symmetry
-		}
-		return a.submit(ctx, endpoint, body)
-	})
-}
-
-type textureArgs struct {
-	ProjectID string `json:"project_id"`
-	viewArgs
-	Quality   string   `json:"quality"`
-	Delight   *bool    `json:"delight"`
-	Alignment string   `json:"alignment"`
-	PartNames []string `json:"part_names"`
-	followArgs
-}
-
-func texture(ctx context.Context, a *app, x textureArgs) (string, error) {
-	paths, multiview, err := x.paths()
-	if err != nil {
-		return "", err
-	}
-	wire, key, err := textureQuality(x.Quality)
-	if err != nil {
-		return "", err
-	}
-	align, err := alignment(x.Alignment)
-	if err != nil {
-		return "", err
-	}
-	imgs, err := readImages(paths)
-	if err != nil {
-		return "", err
-	}
-	if _, err := a.preflight(ctx, x.ProjectID); err != nil {
-		return "", err
-	}
-	delight := x.Delight == nil || *x.Delight
-	keys := []string{"TextureGeneration"}
-	if key != "" {
-		keys = append(keys, key)
-	}
-	body := map[string]any{"model_version": textureModelVersion, "delight": delight, "project_id": x.ProjectID, "texture_alignment": align, "texture_quality": wire}
-	scope := "whole model"
-	if len(x.PartNames) > 0 {
-		body["part_names"] = x.PartNames
-		scope = strings.Join(x.PartNames, ", ")
-	}
-	what := fmt.Sprintf("texture %s (%s, delight %t) on %s, from %s", qualityLabel(wire), scope, delight, x.ProjectID, describeInputs(imgs, multiview))
-	return a.paid(ctx, what, keys, x.followArgs, x.ProjectID, func() (receipt, error) {
-		refs, err := a.uploadAll(ctx, imgs)
-		if err != nil {
-			return receipt{}, err
-		}
-		if multiview {
-			body["images"] = refs
-		} else {
-			body["image"] = refs[0]
-		}
-		return a.submit(ctx, "/v2/studio/operation/texture_model", body)
-	})
-}
-
-type remeshArgs struct {
-	ProjectID string   `json:"project_id"`
-	FaceLimit int      `json:"face_limit"`
-	Quad      bool     `json:"quad"`
-	SmartPoly bool     `json:"smart_poly"`
-	PartNames []string `json:"part_names"`
-	followArgs
-}
-
-func remesh(ctx context.Context, a *app, x remeshArgs) (string, error) {
-	limit, mode := 150000, "plain remesh"
-	switch {
-	case x.SmartPoly && x.Quad:
-		limit, mode = 10000, "Smart Poly retopology"
-	case x.SmartPoly:
-		limit, mode = 20000, "Smart Poly retopology"
-	case x.Quad:
-		limit = 50000
-	}
-	topo := "triangles"
-	if x.Quad {
-		topo = "quads"
-	}
-	if x.FaceLimit < 500 || x.FaceLimit > limit {
-		return "", fmt.Errorf("face_limit must be 500 to %s for %s with %s", thousands(limit), mode, topo)
-	}
-	p, err := a.preflight(ctx, x.ProjectID)
-	if err != nil {
-		return "", err
-	}
-	if p.is("is_rigged") {
-		return "", errors.New("Studio cannot remesh a rigged project")
-	}
-	if x.SmartPoly && p.is("is_nexus_mesh") {
-		return "", errors.New("Smart Poly retopology is not available for Smart Mesh projects; use smart_poly=false")
-	}
-	keys := []string{"Retopology_Triangle"}
-	if x.Quad {
-		keys[0] = "Retopology_Quad"
-	}
-	if x.SmartPoly {
-		keys = append(keys, "Retopology_SmartPoly")
-	}
-	scope := "every mesh"
-	if len(x.PartNames) > 0 {
-		scope = strings.Join(x.PartNames, ", ")
-	}
-	what := fmt.Sprintf("%s to %s %s (%s) on %s", mode, thousands(x.FaceLimit), topo, scope, x.ProjectID)
-	return a.paid(ctx, what, keys, x.followArgs, x.ProjectID, func() (receipt, error) {
-		names := x.PartNames
-		if len(names) == 0 {
-			if names, err = a.partNames(ctx, p); err != nil {
-				return receipt{}, fmt.Errorf("not submitted, nothing charged: %w", err)
-			}
-		}
-		return a.submit(ctx, "/v2/studio/operation/remesh", map[string]any{
-			"bake": true, "face_limit": x.FaceLimit, "model_version": "default", "part_name_list": names,
-			"project_id": x.ProjectID, "quad": x.Quad, "smart_poly": x.SmartPoly,
-		})
-	})
-}
-
-func (a *app) partNames(ctx context.Context, p *project) ([]string, error) {
-	if p.ModelURL == "" {
-		return nil, errors.New("the project has no model file to read part names from")
-	}
-	body, err := a.open(ctx, p.ModelURL)
-	if err != nil {
-		return nil, err
-	}
-	defer body.Close()
-	b, err := io.ReadAll(io.LimitReader(body, 1<<30))
-	if err != nil {
-		return nil, err
-	}
-	if sniff(b) == "fbx" {
-		return nil, errors.New("the model is FBX (a quad Smart Mesh); pass part_names")
-	}
-	names, err := meshNames(b)
-	if err == nil && len(names) == 0 {
-		err = errors.New("the model has no named meshes; pass part_names")
-	}
-	return names, err
-}
-
-type segmentArgs struct {
-	ProjectID   string `json:"project_id"`
-	Granularity string `json:"granularity"`
-	followArgs
-}
-
-func segment(ctx context.Context, a *app, x segmentArgs) (string, error) {
-	g := x.Granularity
-	if g == "" {
-		g = "balanced"
-	}
-	if g != "coarse" && g != "balanced" && g != "fine" {
-		return "", errors.New("granularity must be coarse, balanced or fine")
-	}
-	p, err := a.preflight(ctx, x.ProjectID)
-	if err != nil {
-		return "", err
-	}
-	if p.is("is_quad") || p.is("is_rigged") {
-		return "", errors.New("Studio cannot segment a quad or rigged project")
-	}
-	what := fmt.Sprintf("segmentation (%s) of %s", g, x.ProjectID)
-	return a.paid(ctx, what, []string{"Segmentation"}, x.followArgs, x.ProjectID, func() (receipt, error) {
-		return a.submit(ctx, "/v2/studio/operation/ai_segmentation", map[string]any{
-			"model_version": segmentationModelVersion, "project_id": x.ProjectID, "segmentation_granularity": g,
-		})
-	})
-}
-
 // ---- jobs, projects, downloads ----
 
 type waitArgs struct {
@@ -978,66 +627,96 @@ type waitArgs struct {
 	DownloadTo     string `json:"download_to"`
 }
 
-func waitJob(ctx context.Context, a *app, x waitArgs) (string, error) {
+func waitJob(ctx context.Context, a *app, x waitArgs) (reply, error) {
 	if x.OperatorID == "" {
-		return "", errors.New("operator_id is required")
+		return reply{}, errors.New("operator_id is required")
 	}
 	timeout := 600 * time.Second
 	if x.TimeoutSeconds != nil {
 		timeout = time.Duration(min(max(*x.TimeoutSeconds, 0), 3600)) * time.Second
 	}
-	return a.finish(ctx, x.OperatorID, x.ProjectID, timeout, x.DownloadTo)
+	title := "Job"
+	if jobs, err := a.jobs(); err == nil {
+		for _, j := range jobs {
+			if j.OperatorID == x.OperatorID && j.Title != "" {
+				title = j.Title
+			}
+		}
+	}
+	r := reply{Card: &card{Kind: "job", Title: title, OperatorID: x.OperatorID, ProjectID: x.ProjectID}}
+	return r, a.finish(ctx, &r, x.OperatorID, x.ProjectID, timeout, x.DownloadTo)
 }
 
 // finish waits for a job and reports the project; with downloadTo it also
 // saves the new version of the model.
-func (a *app) finish(ctx context.Context, op, projectID string, timeout time.Duration, downloadTo string) (string, error) {
+func (a *app) finish(ctx context.Context, r *reply, op, projectID string, timeout time.Duration, downloadTo string) error {
 	it, err := a.wait(ctx, op, timeout)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if it.ProjectID != "" {
 		projectID = it.ProjectID
 	}
+	r.Card.OperatorID, r.Card.Progress = op, it.Progress
 	switch it.Status {
 	case "success":
 	case "failed", "cancelled", "expired", "banned":
+		r.Card.Status = "failed"
+		a.logJob(jobRecord{OperatorID: op, Status: it.Status})
 		reason := ""
 		if it.Reason != nil {
 			reason = fmt.Sprintf(": %v", it.Reason)
 		}
-		return "", fmt.Errorf("job %s ended as %s%s", op, it.Status, reason)
+		return fmt.Errorf("job %s ended as %s%s", op, it.Status, reason)
 	default:
+		r.Card.Status = "running"
 		next := fmt.Sprintf("tripo_wait operator_id=%s project_id=%s", op, projectID)
 		if downloadTo != "" {
 			next += " download_to=" + downloadTo
 		}
-		return fmt.Sprintf("Still %s (%.0f%%) after %s; nothing downloaded yet. Next: %s", it.Status, it.Progress, timeout, next), nil
+		r.line("Still %s (%.0f%%) after %s; nothing downloaded yet. Next: %s", it.Status, it.Progress, timeout, next)
+		return nil
 	}
+	r.Card.Status = "done"
 	if projectID == "" {
 		if downloadTo != "" {
-			return "", fmt.Errorf("job %s is done, but Tripo's progress does not name the project; call tripo_wait again with project_id to download", op)
+			return fmt.Errorf("job %s is done, but Tripo's progress does not name the project; call tripo_wait again with project_id to download", op)
 		}
-		return fmt.Sprintf("Done: job %s succeeded. Pass project_id to see the project.", op), nil
+		r.line("Done: job %s succeeded. Pass project_id to see the project.", op)
+		return nil
 	}
 	p, err := a.project(ctx, projectID, op)
 	if err != nil {
-		return "", err
+		return err
 	}
-	text := "Done. " + describe(p)
-	if downloadTo == "" {
-		return text, nil
+	a.showProject(r, p)
+	r.Card.Next = nextSteps(p)
+	r.line("Done. %s", describe(p))
+	saved := ""
+	if downloadTo != "" {
+		path, line, err := a.download(ctx, p, downloadTo, "", 0)
+		if err != nil {
+			return err
+		}
+		r.line("%s", line)
+		r.Card.Status, r.Card.Saved, saved = "saved", []string{path}, path
+		r.meta("model", map[string]any{"url": a.preview.local(path), "name": filepath.Base(path)})
 	}
-	line, err := a.download(ctx, p, downloadTo, "", 0)
-	return text + "\n" + line, err
+	a.logJob(jobRecord{OperatorID: op, ProjectID: projectID, Status: "done", Saved: saved})
+	return nil
+}
+
+// nextSteps suggests the usual follow-up as a widget button.
+func nextSteps(p *project) []cardAction {
+	if !p.is("is_textured") {
+		return []cardAction{{"Texture 2K · 10 credits", fmt.Sprintf("Texture Tripo project %s at 2K from the same views.", p.ID)}}
+	}
+	return nil
 }
 
 func describe(p *project) string {
 	var flags []string
-	for _, f := range []struct{ key, label string }{
-		{"is_textured", "textured"}, {"is_pbr", "PBR"}, {"is_quad", "quad"},
-		{"is_nexus_mesh", "Smart Mesh"}, {"is_segmented", "segmented"}, {"is_rigged", "rigged"},
-	} {
+	for _, f := range projectFlags {
 		v := "?"
 		if b := p.flag(f.key); b != nil {
 			v = map[bool]string{true: "yes", false: "no"}[*b]
@@ -1059,27 +738,39 @@ type downloadArgs struct {
 	TextureSize int    `json:"texture_size"`
 }
 
-func download(ctx context.Context, a *app, x downloadArgs) (string, error) {
+func download(ctx context.Context, a *app, x downloadArgs) (reply, error) {
 	if x.Format != "" && x.OperatorID != "" {
-		return "", errors.New("format exports the current version only; drop operator_id or format")
+		return reply{}, errors.New("format exports the current version only; drop operator_id or format")
 	}
 	p, err := a.project(ctx, x.ProjectID, x.OperatorID)
 	if err != nil {
-		return "", err
+		return reply{}, err
 	}
-	return a.download(ctx, p, x.Path, x.Format, x.TextureSize)
+	r := reply{Card: &card{Kind: "project", Title: p.Name, Status: "saved"}}
+	a.showProject(&r, p)
+	path, line, err := a.download(ctx, p, x.Path, x.Format, x.TextureSize)
+	if err != nil {
+		r.Card.Status = "failed"
+		return r, err
+	}
+	r.Text, r.Card.Saved = line, []string{path}
+	if x.Format == "" || x.Format == "glb" {
+		r.meta("model", map[string]any{"url": a.preview.local(path), "name": filepath.Base(path)})
+	}
+	return r, nil
 }
 
-func (a *app) download(ctx context.Context, p *project, dest, format string, textureSize int) (string, error) {
+// download saves the project's model and returns the path and a result line.
+func (a *app) download(ctx context.Context, p *project, dest, format string, textureSize int) (string, string, error) {
 	src, label, ext := p.ModelURL, "the stored model", ".glb"
 	if format != "" {
 		u, err := a.exportURL(ctx, p, format, textureSize)
 		if err != nil {
-			return "", fmt.Errorf("export failed: %w", err)
+			return "", "", fmt.Errorf("export failed: %w", err)
 		}
 		src, label, ext = u, format+" export", "."+format
 	} else if src == "" {
-		return "", errors.New("the project has no model file yet")
+		return "", "", errors.New("the project has no model file yet")
 	}
 	name := p.Name
 	if name == "" {
@@ -1087,17 +778,17 @@ func (a *app) download(ctx context.Context, p *project, dest, format string, tex
 	}
 	path, err := outputPath(dest, name, ext)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	final, n, kind, err := a.save(ctx, src, path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	note := ""
 	if final != path {
 		note = fmt.Sprintf(" (the file is %s, so the extension was changed)", strings.ToUpper(kind))
 	}
-	return fmt.Sprintf("Saved %s to %s, %s%s.", label, final, size(n), note), nil
+	return final, fmt.Sprintf("Saved %s to %s, %s%s.", label, final, size(n), note), nil
 }
 
 type listArgs struct {
@@ -1105,7 +796,7 @@ type listArgs struct {
 	Filter string `json:"filter"`
 }
 
-func listProjects(ctx context.Context, a *app, x listArgs) (string, error) {
+func listProjects(ctx context.Context, a *app, x listArgs) (reply, error) {
 	filter := x.Filter
 	if filter == "" {
 		filter = "all"
@@ -1114,44 +805,61 @@ func listProjects(ctx context.Context, a *app, x listArgs) (string, error) {
 	var page struct {
 		Total    int `json:"total"`
 		Projects []struct {
-			ID         string `json:"id"`
-			Name       string `json:"project_name"`
-			Type       string `json:"type"`
-			Visibility string `json:"visibility"`
-			Running    any    `json:"running_operator"`
+			ID         string   `json:"id"`
+			Name       string   `json:"project_name"`
+			Type       string   `json:"type"`
+			Visibility string   `json:"visibility"`
+			Running    any      `json:"running_operator"`
+			Covers     []string `json:"cover_image"`
 		} `json:"projects"`
 	}
 	if err := a.call(ctx, "GET", "/v2/studio/assets/v2?"+q.Encode(), nil, &page); err != nil {
-		return "", err
+		return reply{}, err
 	}
+	r := reply{Card: &card{Kind: "projects", Title: "Projects"}}
 	if len(page.Projects) == 0 {
-		return fmt.Sprintf("No projects (filter %s, offset %d, total %d).", filter, x.Offset, page.Total), nil
+		r.Text = fmt.Sprintf("No projects (filter %s, offset %d, total %d).", filter, x.Offset, page.Total)
+		return r, nil
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Projects %d-%d of %d (filter %s):\n", x.Offset+1, x.Offset+len(page.Projects), page.Total, filter)
+	r.Card.Summary = fmt.Sprintf("%d-%d of %d · %s", x.Offset+1, x.Offset+len(page.Projects), page.Total, filter)
+	r.line("Projects %d-%d of %d (filter %s):", x.Offset+1, x.Offset+len(page.Projects), page.Total, filter)
+	covers := map[string]string{}
 	for _, p := range page.Projects {
-		fmt.Fprintf(&b, "- %s  %q  %s  %s", p.ID, p.Name, p.Type, p.Visibility)
-		if m, ok := p.Running.(map[string]any); (ok && len(m) > 0) || (!ok && p.Running != nil) {
-			b.WriteString("  [job running]")
+		m, isMap := p.Running.(map[string]any)
+		running := (isMap && len(m) > 0) || (!isMap && p.Running != nil)
+		r.Card.Items = append(r.Card.Items, &projectCard{ID: p.ID, Name: p.Name, Type: p.Type, Visibility: p.Visibility, Running: running, URL: studioURL(p.ID)})
+		if len(p.Covers) > 0 && p.Covers[0] != "" {
+			covers[p.ID] = p.Covers[0]
 		}
-		b.WriteString("\n")
+		state := ""
+		if running {
+			state = "  [job running]"
+		}
+		r.line("- %s  %q  %s  %s%s", p.ID, p.Name, p.Type, p.Visibility, state)
 	}
+	r.meta("covers", covers)
 	if next := x.Offset + len(page.Projects); next < page.Total {
-		fmt.Fprintf(&b, "More: offset=%d", next)
+		r.Card.More = fmt.Sprintf("offset=%d", next)
+		r.line("More: offset=%d", next)
 	}
-	return strings.TrimSpace(b.String()), nil
+	return r, nil
 }
 
 type projectArgs struct {
-	ProjectID string `json:"project_id"`
+	ProjectID  string `json:"project_id"`
+	OperatorID string `json:"operator_id"`
 }
 
-func projectInfo(ctx context.Context, a *app, x projectArgs) (string, error) {
-	p, err := a.project(ctx, x.ProjectID, "")
+func projectInfo(ctx context.Context, a *app, x projectArgs) (reply, error) {
+	p, err := a.project(ctx, x.ProjectID, x.OperatorID)
 	if err != nil {
-		return "", err
+		return reply{}, err
 	}
-	return describe(p) + "\nStatus: " + p.Status, nil
+	r := reply{Card: &card{Kind: "project", Title: p.Name, Status: p.Status}}
+	a.showProject(&r, p)
+	r.Card.Next = nextSteps(p)
+	r.line("%s", describe(p))
+	return r, nil
 }
 
 func thousands(n int) string {

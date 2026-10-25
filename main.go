@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,13 +17,22 @@ import (
 
 const (
 	serverName    = "tripo-studio-mcp"
-	serverVersion = "0.1.0"
+	serverVersion = "0.2.0"
 )
 
 const instructions = `Tripo Studio through the owner's web session. It spends Studio (Max subscription) credits, not the Tripo API wallet.
-Paid tools (tripo_generate_model, tripo_texture, tripo_remesh, tripo_segment) submit as soon as they are called: get the owner's OK with the cost first. dry_run=true returns the cost without uploading or spending anything.
+Paid tools submit as soon as they are called: get the owner's OK with the cost first. dry_run=true returns the cost without uploading or spending anything.
 If a paid call reports "outcome unknown", look at tripo_list_projects before submitting again.
-Usual chain: tripo_generate_model (Smart Mesh P1, multiview) -> tripo_texture on the returned project_id -> tripo_download. A paid tool with download_to waits for the job and saves the model in the same call.`
+Usual chain: tripo_generate_model (Smart Mesh P1, multiview) -> tripo_texture on the returned project_id -> tripo_download. A paid tool with download_to waits for the job and saves the model in the same call.
+Results also render as a card in the chat; keep your own reply short and do not repeat what the card shows.`
+
+// The result widget (MCP Apps). ui/build.mjs writes it; go generate rebuilds it.
+//
+//go:generate npm --prefix ui run build
+//go:embed ui/dist/card.html
+var cardHTML string
+
+const appMIME = "text/html;profile=mcp-app"
 
 type message struct {
 	ID     json.RawMessage `json:"id,omitempty"`
@@ -32,6 +42,7 @@ type message struct {
 
 type server struct {
 	app     *app
+	cardURI string
 	mu      sync.Mutex // one JSON line at a time on stdout
 	cancels sync.Map   // request id -> context.CancelFunc
 	running sync.WaitGroup
@@ -44,7 +55,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s := &server{app: a}
+	a.startPreview()
+	// The URI changes with the widget build and the preview port, so a host
+	// never reuses a cached copy whose CSP names an old port.
+	port := a.preview.origin[strings.LastIndex(a.preview.origin, ":")+1:]
+	s := &server{app: a, cardURI: fmt.Sprintf("ui://tripo-studio/card-%s-%s.html", sha256Hex([]byte(cardHTML))[:10], port)}
 	in := bufio.NewReader(os.Stdin)
 	for {
 		line, err := in.ReadBytes('\n')
@@ -78,16 +93,32 @@ func (s *server) handle(m message) {
 		}
 		s.result(m.ID, map[string]any{
 			"protocolVersion": p.ProtocolVersion,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"capabilities":    map[string]any{"tools": map[string]any{}, "resources": map[string]any{}},
 			"serverInfo":      map[string]any{"name": serverName, "version": serverVersion},
 			"instructions":    instructions,
 		})
 	case "ping":
 		s.result(m.ID, map[string]any{})
 	case "tools/list":
-		s.result(m.ID, map[string]any{"tools": tools})
+		s.result(m.ID, map[string]any{"tools": s.toolList()})
 	case "tools/call":
 		s.call(m)
+	case "resources/list":
+		s.result(m.ID, map[string]any{"resources": []map[string]any{{
+			"uri": s.cardURI, "name": "Tripo result card", "mimeType": appMIME,
+			"description": "Job, project and gallery card with a 3D preview.",
+		}}})
+	case "resources/read":
+		var p struct {
+			URI string `json:"uri"`
+		}
+		if json.Unmarshal(m.Params, &p) != nil || p.URI != s.cardURI {
+			s.fail(m.ID, -32002, "resource not found: "+p.URI)
+			return
+		}
+		s.result(m.ID, map[string]any{"contents": []map[string]any{{
+			"uri": s.cardURI, "mimeType": appMIME, "text": cardHTML, "_meta": s.cardMeta(),
+		}}})
 	case "notifications/cancelled":
 		var p struct {
 			RequestID json.RawMessage `json:"requestId"`
@@ -102,6 +133,37 @@ func (s *server) handle(m message) {
 			s.fail(m.ID, -32601, "method not found: "+m.Method)
 		}
 	}
+}
+
+// cardMeta is the widget's sandbox policy: models come from the local preview
+// server, covers from Tripo's CDN, thumbnails inline.
+func (s *server) cardMeta() map[string]any {
+	connect := []string{"data:", "blob:"}
+	if o := s.app.preview.origin; o != "" {
+		connect = append(connect, o)
+	}
+	return map[string]any{"ui": map[string]any{
+		"prefersBorder": true,
+		"csp": map[string]any{
+			"connectDomains":  connect,
+			"resourceDomains": []string{"https://*.tripo3d.com", "https://*.tripo3d.ai", "data:", "blob:"},
+		},
+	}}
+}
+
+func (s *server) toolList() []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		m := map[string]any{"name": t.Name, "description": t.Description, "inputSchema": t.InputSchema}
+		if t.UI {
+			m["_meta"] = map[string]any{
+				"ui":             map[string]any{"resourceUri": s.cardURI, "visibility": []string{"model", "app"}},
+				"ui/resourceUri": s.cardURI, // the pre-GA key some hosts still read
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func (s *server) call(m message) {
@@ -128,22 +190,32 @@ func (s *server) call(m message) {
 	s.cancels.Store(key, cancel)
 	defer func() { s.cancels.Delete(key); cancel() }()
 
-	text, err := func() (text string, err error) {
+	r, err := func() (r reply, err error) {
 		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("internal error: %v", r)
+			if v := recover(); v != nil {
+				err = fmt.Errorf("internal error: %v", v)
 			}
 		}()
 		return t.run(ctx, s.app, p.Arguments)
 	}()
 	if err != nil {
 		// Keep what already happened (a submitted job, its ids, its cost) above the error.
-		text = strings.TrimSpace(text + "\nError: " + err.Error())
+		r.Text = strings.TrimSpace(r.Text + "\nError: " + err.Error())
+		if t.UI && r.Card == nil {
+			r.Card = &card{Kind: "error", Title: t.Name}
+		}
+		if r.Card != nil {
+			r.Card.Error = err.Error()
+		}
 	}
-	s.result(m.ID, map[string]any{
-		"content": []map[string]any{{"type": "text", "text": text}},
-		"isError": err != nil,
-	})
+	res := map[string]any{"content": []map[string]any{{"type": "text", "text": r.Text}}, "isError": err != nil}
+	if r.Card != nil {
+		res["structuredContent"] = r.Card
+	}
+	if r.Meta != nil {
+		res["_meta"] = map[string]any{"tripo": r.Meta}
+	}
+	s.result(m.ID, res)
 }
 
 func (s *server) result(id json.RawMessage, result any) {
